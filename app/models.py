@@ -99,3 +99,24 @@ class VerifyOtpRequest(BaseModel):
 
 class MessageResponse(BaseModel):
     message: str
+
+
+class BrokerConnectRequest(BaseModel):
+    user_id: str
+    broker_name: str = Field(..., min_length=1)
+    account_id: str = Field(..., min_length=1)
+    api_key: str = Field(..., min_length=1)
+    access_token: str = Field(..., min_length=1)
+    base_url: Optional[str] = None
+
+
+class BrokerConnection(BaseModel):
+    user_id: str
+    broker_name: str
+    account_id: str
+    base_url: Optional[str] = None
+    connected: bool = True
+
+
+class BrokerConnectionResponse(BrokerConnection):
+    message: str

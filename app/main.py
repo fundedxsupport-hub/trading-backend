@@ -2,6 +2,9 @@ from fastapi import FastAPI
 
 from app.models import (
     AdminActivateResponse,
+    BrokerConnectRequest,
+    BrokerConnection,
+    BrokerConnectionResponse,
     CloseTradeRequest,
     CloseTradeResponse,
     InitUserResponse,
@@ -12,6 +15,7 @@ from app.models import (
     UserIdRequest,
     VerifyOtpRequest,
 )
+from app.services.broker_service import connect_broker, disconnect_broker, get_broker_status
 from app.services.trade_service import close_trade as close_trade_service
 from app.services.trade_service import open_trade
 from app.services.user_service import (
@@ -67,3 +71,18 @@ def admin_activate(request: UserIdRequest) -> dict[str, object]:
 @app.post("/verify-otp", response_model=MessageResponse)
 def verify_otp(request: VerifyOtpRequest) -> dict[str, str]:
     return activate_with_otp(request.user_id, request.otp)
+
+
+@app.post("/broker/connect", response_model=BrokerConnectionResponse)
+def broker_connect(request: BrokerConnectRequest) -> dict[str, object]:
+    return connect_broker(request)
+
+
+@app.get("/broker/status/{user_id}", response_model=BrokerConnection)
+def broker_status(user_id: str) -> BrokerConnection:
+    return get_broker_status(user_id)
+
+
+@app.post("/broker/disconnect", response_model=MessageResponse)
+def broker_disconnect(request: UserIdRequest) -> dict[str, str]:
+    return disconnect_broker(request.user_id)
