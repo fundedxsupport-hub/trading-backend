@@ -2,9 +2,10 @@
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pymongo.errors import PyMongoError
 
 from app.config import get_settings
@@ -73,6 +74,7 @@ from app.services.trade_service import get_trade, list_portfolio, list_trade_his
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
 settings = get_settings()
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 @asynccontextmanager
@@ -107,15 +109,11 @@ app.add_middleware(
 
 
 
-def get_current_user(authorization: str = Header(...)) -> Dict[str, Any]:
-    if not authorization or not authorization.lower().startswith("bearer "):
+def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme)) -> Dict[str, Any]:
+    if credentials is None or credentials.scheme.lower() != "bearer" or not credentials.credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization bearer token")
 
-    access_token = authorization.split(" ", 1)[1].strip()
-    if not access_token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization bearer token")
-
-    return get_user_by_access_token(access_token)
+    return get_user_by_access_token(credentials.credentials.strip())
 
 
 @app.exception_handler(HTTPException)
@@ -343,6 +341,8 @@ def admin_activate(request: UserIdRequest) -> Dict[str, Any]:
 @app.post("/verify-otp", response_model=MessageResponse)
 def verify_otp(request: VerifyOtpRequest) -> Dict[str, str]:
     return {"message": "OTP endpoint reserved for activation workflows"}
+
+
 
 
 
