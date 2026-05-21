@@ -1,4 +1,4 @@
-import os
+﻿import os
 import json
 from dataclasses import dataclass
 from functools import lru_cache
@@ -32,6 +32,7 @@ class Settings:
     default_daily_loss_limit: float = 5000.0
     default_max_position_size: int = 0
     upstox_instrument_map: str = "{}"
+    upstox_underlying_map: str = "{}"
 
     @property
     def parsed_cors_origins(self) -> List[str]:
@@ -47,6 +48,25 @@ class Settings:
             return {}
         return {str(key).upper(): str(value) for key, value in data.items()} if isinstance(data, dict) else {}
 
+    @property
+    def parsed_underlying_map(self) -> Dict[str, str]:
+        default_map = {
+            "NIFTY": "NSE_INDEX|Nifty 50",
+            "NIFTY50": "NSE_INDEX|Nifty 50",
+            "BANKNIFTY": "NSE_INDEX|Nifty Bank",
+            "FINNIFTY": "NSE_INDEX|Nifty Fin Service",
+            "MIDCPNIFTY": "NSE_INDEX|NIFTY MID SELECT",
+            "MIDCAP": "NSE_INDEX|NIFTY MID SELECT",
+            "SENSEX": "BSE_INDEX|SENSEX",
+            "BANKEX": "BSE_INDEX|BANKEX",
+        }
+        try:
+            data = json.loads(self.upstox_underlying_map or "{}")
+        except json.JSONDecodeError:
+            return default_map
+        if isinstance(data, dict):
+            default_map.update({str(key).upper(): str(value) for key, value in data.items()})
+        return default_map
 
 @lru_cache
 def get_settings() -> Settings:
@@ -72,4 +92,6 @@ def get_settings() -> Settings:
         default_daily_loss_limit=float(os.getenv("DEFAULT_DAILY_LOSS_LIMIT", "5000")),
         default_max_position_size=int(os.getenv("DEFAULT_MAX_POSITION_SIZE", "0")),
         upstox_instrument_map=os.getenv("UPSTOX_INSTRUMENT_MAP", "{}"),
+        upstox_underlying_map=os.getenv("UPSTOX_UNDERLYING_MAP", "{}"),
     )
+

@@ -1,4 +1,6 @@
-from typing import Any, Dict, List, Optional
+﻿from typing import Any, Dict, List, Optional
+
+import requests
 
 from fastapi import HTTPException, status
 
@@ -10,6 +12,7 @@ from app.services.broker_adapter import broker_adapter
 from app.utils import clean_dict, new_uuid, now_utc
 
 settings = get_settings()
+_INSTRUMENT_CACHE: Dict[str, str] = {}
 
 
 def _capital_field(account_type: AccountType) -> str:
@@ -107,8 +110,55 @@ def _apply_risk_lock(user: Dict[str, Any], account_type: AccountType) -> None:
 
 def resolve_instrument_token(symbol: str) -> str:
     normalized_symbol = symbol.strip().upper()
+    if "|" in normalized_symbol:
+        return normalized_symbol
+
     instrument_map = settings.parsed_instrument_map
-    return instrument_map.get(normalized_symbol, normalized_symbol)
+    if normalized_symbol in instrument_map:
+        return instrument_map[normalized_symbol]
+    if normalized_symbol in _INSTRUMENT_CACHE:
+        return _INSTRUMENT_CACHE[normalized_symbol]
+
+    if not settings.upstox_access_token:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Upstox access token is not configured")
+
+    url = f"{settings.upstox_base_url.rstrip('/')}/instruments/search"
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {settings.upstox_access_token}",
+    }
+    params = {
+        "query": normalized_symbol,
+        "exchanges": "NSE",
+        "segments": "EQ",
+        "page_number": 1,
+        "records": 10,
+    }
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Instrument lookup failed: {exc}")
+
+    instruments = payload.get("data") or []
+    exact_matches = [
+        item for item in instruments
+        if str(item.get("trading_symbol", "")).upper() == normalized_symbol
+        and item.get("segment") == "NSE_EQ"
+        and item.get("instrument_key")
+    ]
+    fallback_matches = [
+        item for item in instruments
+        if item.get("segment") == "NSE_EQ" and item.get("instrument_key")
+    ]
+    selected = exact_matches[0] if exact_matches else (fallback_matches[0] if fallback_matches else None)
+    if not selected:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Instrument not found for symbol {normalized_symbol}")
+
+    instrument_key = str(selected["instrument_key"])
+    _INSTRUMENT_CACHE[normalized_symbol] = instrument_key
+    return instrument_key
 
 
 def open_app_trade(user: Dict[str, Any], request: AppTradeRequest) -> Dict[str, Any]:
@@ -345,3 +395,4 @@ def get_trade(trade_id: str) -> Dict[str, Any]:
     if not trade:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade not found")
     return clean_dict(trade)
+
