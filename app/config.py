@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from functools import lru_cache
+from typing import List
 
 from dotenv import load_dotenv
 
@@ -15,6 +16,7 @@ class Settings:
     mongo_db_name: str = "fundedx_trading"
     cors_origins: str = "*"
     otp_ttl_seconds: int = 300
+    upstox_account_id: str = ""
     upstox_base_url: str = "https://api.upstox.com/v2"
     upstox_access_token: str = ""
     upstox_api_key: str = ""
@@ -25,7 +27,7 @@ class Settings:
     admin_api_key: str = ""
 
     @property
-    def parsed_cors_origins(self) -> list[str]:
+    def parsed_cors_origins(self) -> List[str]:
         if self.cors_origins.strip() == "*":
             return ["*"]
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
@@ -34,11 +36,13 @@ class Settings:
 @lru_cache
 def get_settings() -> Settings:
     return Settings(
+        app_name=os.getenv("APP_NAME", "FundedX Trading API"),
         environment=os.getenv("ENVIRONMENT", "development"),
         mongo_url=os.getenv("MONGO_URL", "mongodb://localhost:27017"),
         mongo_db_name=os.getenv("MONGO_DB_NAME", "fundedx_trading"),
         cors_origins=os.getenv("CORS_ORIGINS", "*"),
         otp_ttl_seconds=int(os.getenv("OTP_TTL_SECONDS", "300")),
+        upstox_account_id=os.getenv("UPSTOX_ACCOUNT_ID", ""),
         upstox_base_url=os.getenv("UPSTOX_BASE_URL", "https://api.upstox.com/v2"),
         upstox_access_token=os.getenv("UPSTOX_ACCESS_TOKEN", ""),
         upstox_api_key=os.getenv("UPSTOX_API_KEY", ""),

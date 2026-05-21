@@ -1,6 +1,6 @@
 from datetime import datetime
 from enum import Enum
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
@@ -135,7 +135,7 @@ class SupportTicketResponse(BaseModel):
     message: str
     status: str
     timestamp: datetime
-    messages: list[SupportMessage] = []
+    messages: List[SupportMessage] = Field(default_factory=list)
 
 
 class AdminActivateResponse(BaseModel):
@@ -173,7 +173,7 @@ class TradeRequest(BaseModel):
     instrument_token: Optional[str] = None
     order_type: str = "MARKET"
     product: Optional[str] = None
-    execute_on_broker: bool = False
+    execute_on_broker: bool = True
     limit_price: Optional[float] = Field(default=None, gt=0)
     trigger_price: Optional[float] = Field(default=None, ge=0)
     stop_loss: Optional[float] = Field(default=None, gt=0)
@@ -308,4 +308,5 @@ class MasterBrokerStatusResponse(BaseModel):
     connected: bool
     demo_mode: bool
     base_url: str
+    account_id: Optional[str] = None
     has_access_token: bool

@@ -1,52 +1,23 @@
-import uuid
+from typing import Any, Dict
 
-from fastapi import HTTPException, status
-
-from app.models import AccountStatus, UserAccount
-from app.services.otp_service import OTP_TTL_SECONDS, attach_otp, verify_user_otp
-from app.storage import users
+from app.models import RegisterRequest
+from app.services.account_service import create_user as create_account_user
+from app.services.account_service import get_user_or_404, request_mpin_otp
 
 
-def create_user() -> UserAccount:
-    user_id = str(uuid.uuid4())
-    user = UserAccount(user_id=user_id)
-    users[user_id] = user
-    return user
+def create_user(payload: RegisterRequest) -> Dict[str, str]:
+    return create_account_user(payload)
 
 
-def get_user_or_404(user_id: str) -> UserAccount:
-    user = users.get(user_id)
-    if not user:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    return user
-
-
-def mark_challenge_passed(user_id: str) -> dict[str, str]:
+def mark_challenge_passed(user_id: str) -> Dict[str, str]:
     user = get_user_or_404(user_id)
-    user.status = AccountStatus.passed
-    user.trading_enabled = False
-    return {"message": "Challenge passed. Activation requested."}
+    return {"message": f"Challenge passed for {user['user_id']}. Activation requested."}
 
 
-def create_activation_otp(user_id: str) -> dict[str, object]:
-    user = get_user_or_404(user_id)
-
-    if user.status != AccountStatus.passed:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="User must pass challenge before activation",
-        )
-
-    otp = attach_otp(user)
-    return {
-        "user_id": user.user_id,
-        "otp": otp,
-        "expires_in_seconds": OTP_TTL_SECONDS,
-        "message": "Activation OTP generated",
-    }
+def create_activation_otp(user_id: str) -> Dict[str, Any]:
+    return request_mpin_otp(user_id)
 
 
-def activate_with_otp(user_id: str, otp: str) -> dict[str, str]:
-    user = get_user_or_404(user_id)
-    verify_user_otp(user, otp)
-    return {"message": "Funded account activated"}
+def activate_with_otp(user_id: str, otp: str) -> Dict[str, str]:
+    get_user_or_404(user_id)
+    return {"message": "Activation OTP verification is handled by the MPIN/activation workflow"}

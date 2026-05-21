@@ -3,7 +3,7 @@ import random
 import secrets
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Dict, Optional, Tuple
 
 
 def now_utc() -> datetime:
@@ -22,7 +22,7 @@ def normalize_email(email: str) -> str:
     return email.strip().lower()
 
 
-def clean_dict(document: dict[str, Any] | None) -> dict[str, Any]:
+def clean_dict(document: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not document:
         return {}
     data = dict(document)
@@ -30,7 +30,7 @@ def clean_dict(document: dict[str, Any] | None) -> dict[str, Any]:
     return data
 
 
-def hash_secret(value: str, salt: str | None = None) -> tuple[str, str]:
+def hash_secret(value: str, salt: Optional[str] = None) -> Tuple[str, str]:
     secret_salt = salt or secrets.token_hex(16)
     digest = hashlib.sha256(f"{secret_salt}:{value}".encode("utf-8")).hexdigest()
     return digest, secret_salt
