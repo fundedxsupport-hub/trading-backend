@@ -2,11 +2,14 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
+from app.config import get_settings
 from app.database import trade_events, trades, users
-from app.models import AccountType, CloseTradeRequest, TradeExecutionStatus, TradeRequest, TradeSide
-from app.services.account_service import get_risk_profile, get_user_or_404, get_wallet
+from app.models import AccountType, AppCloseTradeRequest, AppTradeRequest, CloseTradeRequest, TradeExecutionStatus, TradeRequest, TradeSide
+from app.services.account_service import get_risk_profile, get_user_default_account_type, get_user_or_404, get_wallet
 from app.services.broker_adapter import broker_adapter
 from app.utils import clean_dict, new_uuid, now_utc
+
+settings = get_settings()
 
 
 def _capital_field(account_type: AccountType) -> str:
@@ -98,6 +101,40 @@ def _apply_risk_lock(user: Dict[str, Any], account_type: AccountType) -> None:
             }
         },
     )
+
+
+
+
+def resolve_instrument_token(symbol: str) -> str:
+    normalized_symbol = symbol.strip().upper()
+    instrument_map = settings.parsed_instrument_map
+    return instrument_map.get(normalized_symbol, normalized_symbol)
+
+
+def open_app_trade(user: Dict[str, Any], request: AppTradeRequest) -> Dict[str, Any]:
+    account_type = get_user_default_account_type(user)
+    instrument_token = resolve_instrument_token(request.symbol)
+    trade_request = TradeRequest(
+        user_id=user["user_id"],
+        symbol=request.symbol.strip().upper(),
+        side=request.side,
+        amount=1,
+        quantity=request.quantity,
+        account_type=account_type,
+        instrument_token=instrument_token,
+        order_type="MARKET",
+        execute_on_broker=True,
+    )
+    return open_trade(trade_request)
+
+
+def close_app_trade(user: Dict[str, Any], request: AppCloseTradeRequest) -> Dict[str, Any]:
+    trade = trades.find_one({"trade_id": request.trade_id})
+    if not trade:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade not found")
+    if trade.get("user_id") != user["user_id"]:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Trade does not belong to the logged-in user")
+    return close_trade(CloseTradeRequest(trade_id=request.trade_id, triggered_by="app"))
 
 
 def open_trade(request: TradeRequest) -> Dict[str, Any]:

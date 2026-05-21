@@ -54,6 +54,10 @@ class RegisterResponse(BaseModel):
     user_id: str
     client_id: str
     referral_code: str
+    access_token: str
+    account_type: AccountType = AccountType.challenge
+    challenge_capital: float
+
 
 
 class UserAccount(BaseModel):
@@ -160,6 +164,24 @@ class ChangeMpinRequest(BaseModel):
 class MpinLoginRequest(BaseModel):
     user_id: str
     mpin: str = Field(..., min_length=4, max_length=6)
+
+
+class AppTradeRequest(BaseModel):
+    symbol: str = Field(..., min_length=1)
+    side: TradeSide
+    quantity: int = Field(..., gt=0)
+
+
+class AppCloseTradeRequest(BaseModel):
+    trade_id: str
+
+
+class SessionResponse(BaseModel):
+    message: str
+    user_id: str
+    client_id: str
+    access_token: str
+    account_type: AccountType = AccountType.challenge
 
 
 class TradeRequest(BaseModel):
@@ -281,6 +303,8 @@ class SyncUserResponse(BaseModel):
     message: str
     user_id: str
     client_id: str
+    access_token: str
+    account_type: AccountType = AccountType.challenge
 
 
 class RiskProfileRequest(BaseModel):
