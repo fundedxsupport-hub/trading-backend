@@ -64,7 +64,7 @@ def list_users() -> List[Dict[str, Any]]:
     return [serialize_user(user) for user in users.find({}, {"mpin_hash": 0, "mpin_salt": 0}).sort("created_at", -1)]
 
 
-def create_user(payload: RegisterRequest) -> Dict[str, str]:
+def create_user(payload: RegisterRequest) -> Dict[str, Any]:
     email = normalize_email(payload.email)
     if users.count_documents({"email": email}, limit=1):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
@@ -82,6 +82,7 @@ def create_user(payload: RegisterRequest) -> Dict[str, str]:
     mpin_hash = mpin_salt = None
     if payload.mpin:
         mpin_hash, mpin_salt = hash_secret(payload.mpin)
+    access_token = new_uuid()
 
     user = {
         "user_id": user_id,
@@ -92,10 +93,11 @@ def create_user(payload: RegisterRequest) -> Dict[str, str]:
         "external_uid": (payload.external_uid or "").strip() or None,
         "referral_code": referral_code,
         "referred_by": (payload.referral_code or "").strip().upper() or None,
-        "active_plan_amount": None,
+        "active_plan_amount": settings.default_challenge_capital,
+        "account_type": AccountType.challenge.value,
         "challenge_status": "running",
         "real_status": "running",
-        "challenge_virtual_capital": 0.0,
+        "challenge_virtual_capital": settings.default_challenge_capital,
         "challenge_profit": 0.0,
         "challenge_loss": 0.0,
         "challenge_margin_used": 0.0,
@@ -103,11 +105,12 @@ def create_user(payload: RegisterRequest) -> Dict[str, str]:
         "real_profit": 0.0,
         "real_loss": 0.0,
         "real_margin_used": 0.0,
-        "max_loss_limit": 0.0,
-        "max_drawdown_limit": 0.0,
-        "daily_loss_limit": 0.0,
-        "max_position_size": 0,
+        "max_loss_limit": settings.default_max_loss_limit,
+        "max_drawdown_limit": settings.default_max_drawdown_limit,
+        "daily_loss_limit": settings.default_daily_loss_limit,
+        "max_position_size": settings.default_max_position_size,
         "trading_enabled": True,
+        "access_token": access_token,
         "mpin_hash": mpin_hash,
         "mpin_salt": mpin_salt,
         "created_at": created_at,
@@ -139,6 +142,9 @@ def create_user(payload: RegisterRequest) -> Dict[str, str]:
         "user_id": user_id,
         "client_id": client_id,
         "referral_code": referral_code,
+        "access_token": access_token,
+        "account_type": AccountType.challenge,
+        "challenge_capital": settings.default_challenge_capital,
     }
 
 
@@ -159,10 +165,13 @@ def sync_user(payload: RegisterRequest) -> Dict[str, Any]:
 
     existing = users.find_one(query)
     if existing:
+        access_token = existing.get("access_token") or new_uuid()
         updates = {
             "name": payload.name.strip(),
             "email": email,
             "mobile": mobile,
+            "access_token": access_token,
+            "account_type": existing.get("account_type") or AccountType.challenge.value,
             "updated_at": now_utc(),
         }
         if requested_client_id:
@@ -175,6 +184,8 @@ def sync_user(payload: RegisterRequest) -> Dict[str, Any]:
             "message": "User synced",
             "user_id": user["user_id"],
             "client_id": user["client_id"],
+            "access_token": access_token,
+            "account_type": AccountType.challenge,
         }
 
     created = create_user(payload)
@@ -182,6 +193,8 @@ def sync_user(payload: RegisterRequest) -> Dict[str, Any]:
         "message": "User synced",
         "user_id": created["user_id"],
         "client_id": created["client_id"],
+        "access_token": created["access_token"],
+        "account_type": AccountType.challenge,
     }
 
 
@@ -304,13 +317,21 @@ def change_mpin(payload: ChangeMpinRequest) -> Dict[str, str]:
     return {"message": "MPIN changed successfully"}
 
 
-def login_with_mpin(payload: MpinLoginRequest) -> Dict[str, str]:
+def login_with_mpin(payload: MpinLoginRequest) -> Dict[str, Any]:
     user = get_user_or_404(payload.user_id)
     if not user.get("mpin_hash") or not user.get("mpin_salt"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MPIN is not set")
     if not verify_secret(payload.mpin, user["mpin_hash"], user["mpin_salt"]):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid MPIN")
-    return {"message": "MPIN verified"}
+    access_token = user.get("access_token") or new_uuid()
+    users.update_one({"user_id": user["user_id"]}, {"$set": {"access_token": access_token, "updated_at": now_utc()}})
+    return {
+        "message": "MPIN verified",
+        "user_id": user["user_id"],
+        "client_id": user["client_id"],
+        "access_token": access_token,
+        "account_type": AccountType.challenge,
+    }
 
 
 def list_referrals() -> List[Dict[str, Any]]:
@@ -386,3 +407,18 @@ def master_broker_status() -> Dict[str, Any]:
         "account_id": settings.upstox_account_id or doc.get("account_id") or None,
         "has_access_token": bool(settings.upstox_access_token),
     }
+
+
+def get_user_by_access_token(access_token: str) -> Dict[str, Any]:
+    user = users.find_one({"access_token": access_token})
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired session")
+    return user
+
+
+def get_user_default_account_type(user: Dict[str, Any]) -> AccountType:
+    raw_account_type = user.get("account_type") or AccountType.challenge.value
+    try:
+        return AccountType(raw_account_type)
+    except ValueError:
+        return AccountType.challenge

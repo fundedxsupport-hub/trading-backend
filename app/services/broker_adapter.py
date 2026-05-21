@@ -5,7 +5,7 @@ from typing import Any, Dict
 import requests
 
 from app.config import get_settings
-from app.models import AccountType, TradeExecutionStatus, TradeRequest
+from app.models import TradeExecutionStatus, TradeRequest
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class BrokerAdapter:
         buy_margin = round(fallback_price * float(request.quantity), 2)
         fallback_margin = buy_margin if request.side.value == "BUY" else round(max(buy_margin * 5, buy_margin), 2)
 
-        if request.account_type != AccountType.real or not self.is_live:
+        if not self.is_live:
             return fallback_margin
 
         url = f"{self.settings.upstox_base_url.rstrip('/')}/charges/margin"
@@ -89,13 +89,6 @@ class BrokerAdapter:
         return fallback_margin
 
     def place_order(self, request: TradeRequest) -> Dict[str, Any]:
-        if request.account_type != AccountType.real:
-            return {
-                "status": TradeExecutionStatus.pending,
-                "broker_order_id": None,
-                "message": "Virtual challenge trade recorded without broker execution",
-            }
-
         if not self.is_live:
             return {
                 "status": TradeExecutionStatus.demo,
@@ -133,13 +126,6 @@ class BrokerAdapter:
             return {"status": TradeExecutionStatus.failed, "broker_order_id": None, "message": str(exc)}
 
     def close_order(self, trade: Dict[str, Any]) -> Dict[str, Any]:
-        if trade.get("account_type") != AccountType.real.value:
-            return {
-                "status": TradeExecutionStatus.success,
-                "broker_order_id": None,
-                "message": "Virtual trade closed without broker execution",
-            }
-
         if not self.is_live:
             return {
                 "status": TradeExecutionStatus.demo,

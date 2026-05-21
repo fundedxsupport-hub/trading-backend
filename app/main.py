@@ -1,8 +1,8 @@
-import logging
+﻿import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, FastAPI, HTTPException, Request, status
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pymongo.errors import PyMongoError
@@ -11,6 +11,8 @@ from app.config import get_settings
 from app.database import check_connection, close_connection, setup_indexes, sync_master_broker
 from app.models import (
     AccountType,
+    AppCloseTradeRequest,
+    AppTradeRequest,
     AdminActivateResponse,
     AdminStatsResponse,
     AdminWalletUpdateRequest,
@@ -51,6 +53,7 @@ from app.services.account_service import (
     list_referrals,
     list_support_tickets,
     list_users,
+    get_user_by_access_token,
     login_with_mpin,
     master_broker_status,
     reply_support_ticket,
@@ -62,9 +65,10 @@ from app.services.account_service import (
     update_wallet,
     update_risk_profile,
 )
+from app.services.trade_service import close_app_trade
 from app.services.trade_service import close_trade as close_trade_service
 from app.services.trade_service import estimate_margin as estimate_margin_service
-from app.services.trade_service import get_trade, list_portfolio, list_trade_history, list_trades, open_trade
+from app.services.trade_service import get_trade, list_portfolio, list_trade_history, list_trades, open_app_trade, open_trade
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -99,6 +103,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+
+
+def get_current_user(
+    authorization: Optional[str] = Header(default=None),
+    x_session_token: Optional[str] = Header(default=None),
+    x_user_id: Optional[str] = Header(default=None),
+) -> Dict[str, Any]:
+    token = x_session_token
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    if token:
+        return get_user_by_access_token(token)
+    if x_user_id:
+        logger.warning("X-User-Id fallback used; frontend should send Authorization bearer session token")
+        return get_user_or_404(x_user_id)
+    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing logged-in session token")
 
 
 @app.exception_handler(HTTPException)
@@ -187,13 +209,18 @@ def mpin_change(request: ChangeMpinRequest) -> Dict[str, str]:
     return change_mpin(request)
 
 
-@app.post("/mpin/login", response_model=MessageResponse)
-def mpin_login(request: MpinLoginRequest) -> Dict[str, str]:
+@app.post("/mpin/login")
+def mpin_login(request: MpinLoginRequest) -> Dict[str, Any]:
     return login_with_mpin(request)
 
 
 @app.post("/trade", response_model=TradeResponse)
-def trade(request: TradeRequest) -> Dict[str, Any]:
+def trade(request: AppTradeRequest, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    return open_app_trade(current_user, request)
+
+
+@app.post("/admin/trade/manual", response_model=TradeResponse, include_in_schema=False)
+def manual_trade(request: TradeRequest) -> Dict[str, Any]:
     return open_trade(request)
 
 
@@ -219,7 +246,12 @@ def trade_margin(request: MarginEstimateRequest) -> Dict[str, Any]:
 
 
 @app.post("/close-trade", response_model=CloseTradeResponse)
-def close_trade(request: CloseTradeRequest) -> Dict[str, Any]:
+def close_trade(request: AppCloseTradeRequest, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
+    return close_app_trade(current_user, request)
+
+
+@app.post("/admin/close-trade/manual", response_model=CloseTradeResponse, include_in_schema=False)
+def manual_close_trade(request: CloseTradeRequest) -> Dict[str, Any]:
     return close_trade_service(request)
 
 
@@ -316,3 +348,4 @@ def admin_activate(request: UserIdRequest) -> Dict[str, Any]:
 @app.post("/verify-otp", response_model=MessageResponse)
 def verify_otp(request: VerifyOtpRequest) -> Dict[str, str]:
     return {"message": "OTP endpoint reserved for activation workflows"}
+

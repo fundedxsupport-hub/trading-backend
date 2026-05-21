@@ -1,7 +1,8 @@
 import os
+import json
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import List
+from typing import Dict, List
 
 from dotenv import load_dotenv
 
@@ -25,12 +26,26 @@ class Settings:
     upstox_validity: str = "DAY"
     demo_broker_mode: bool = True
     admin_api_key: str = ""
+    default_challenge_capital: float = 100000.0
+    default_max_loss_limit: float = 10000.0
+    default_max_drawdown_limit: float = 10000.0
+    default_daily_loss_limit: float = 5000.0
+    default_max_position_size: int = 0
+    upstox_instrument_map: str = "{}"
 
     @property
     def parsed_cors_origins(self) -> List[str]:
         if self.cors_origins.strip() == "*":
             return ["*"]
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def parsed_instrument_map(self) -> Dict[str, str]:
+        try:
+            data = json.loads(self.upstox_instrument_map or "{}")
+        except json.JSONDecodeError:
+            return {}
+        return {str(key).upper(): str(value) for key, value in data.items()} if isinstance(data, dict) else {}
 
 
 @lru_cache
@@ -51,4 +66,10 @@ def get_settings() -> Settings:
         upstox_validity=os.getenv("UPSTOX_VALIDITY", "DAY"),
         demo_broker_mode=os.getenv("DEMO_BROKER_MODE", "true").lower() == "true",
         admin_api_key=os.getenv("ADMIN_API_KEY", ""),
+        default_challenge_capital=float(os.getenv("DEFAULT_CHALLENGE_CAPITAL", "100000")),
+        default_max_loss_limit=float(os.getenv("DEFAULT_MAX_LOSS_LIMIT", "10000")),
+        default_max_drawdown_limit=float(os.getenv("DEFAULT_MAX_DRAWDOWN_LIMIT", "10000")),
+        default_daily_loss_limit=float(os.getenv("DEFAULT_DAILY_LOSS_LIMIT", "5000")),
+        default_max_position_size=int(os.getenv("DEFAULT_MAX_POSITION_SIZE", "0")),
+        upstox_instrument_map=os.getenv("UPSTOX_INSTRUMENT_MAP", "{}"),
     )
