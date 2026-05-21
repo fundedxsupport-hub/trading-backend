@@ -1,7 +1,7 @@
-from app.models import BrokerConnection, Trade, UserAccount
+from typing import Any, Dict
 
-
-# In-memory stores. Replace these with database repositories later.
-users: dict[str, UserAccount] = {}
-trades: dict[str, Trade] = {}
-broker_connections: dict[str, BrokerConnection] = {}
+# Legacy in-memory stores kept only for backward-compatible imports.
+# Production code uses MongoDB collections from app.database.
+users: Dict[str, Any] = {}
+trades: Dict[str, Any] = {}
+broker_connections: Dict[str, Any] = {}

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 
@@ -23,7 +23,7 @@ def _margin_field(account_type: AccountType) -> str:
     return "challenge_margin_used" if account_type == AccountType.challenge else "real_margin_used"
 
 
-def _available_balance(wallet: dict[str, Any]) -> float:
+def _available_balance(wallet: Dict[str, Any]) -> float:
     available = wallet.get("available_balance")
     if available is None:
         return float(wallet["balance"])
@@ -49,7 +49,7 @@ def _normalize_order_type(order_type: str) -> str:
     return normalized
 
 
-def _log_trade_event(trade_id: str, event_type: str, payload: dict[str, Any]) -> None:
+def _log_trade_event(trade_id: str, event_type: str, payload: Dict[str, Any]) -> None:
     trade_events.insert_one(
         {
             "event_id": new_uuid(),
@@ -70,7 +70,7 @@ def _calculate_profit_loss(side: str, entry_price: float, exit_price: float, qua
     return round((exit_price - entry_price) * quantity * multiplier, 2)
 
 
-def _risk_breach_reason(user: dict[str, Any], account_type: AccountType) -> str | None:
+def _risk_breach_reason(user: Dict[str, Any], account_type: AccountType) -> Optional[str]:
     wallet = get_wallet(user["user_id"], account_type)
     balance = float(wallet["balance"])
     capital = float(user.get(_capital_field(account_type), 0))
@@ -84,7 +84,7 @@ def _risk_breach_reason(user: dict[str, Any], account_type: AccountType) -> str 
     return None
 
 
-def _apply_risk_lock(user: dict[str, Any], account_type: AccountType) -> None:
+def _apply_risk_lock(user: Dict[str, Any], account_type: AccountType) -> None:
     reason = _risk_breach_reason(user, account_type)
     if not reason:
         return
@@ -100,7 +100,7 @@ def _apply_risk_lock(user: dict[str, Any], account_type: AccountType) -> None:
     )
 
 
-def open_trade(request: TradeRequest) -> dict[str, Any]:
+def open_trade(request: TradeRequest) -> Dict[str, Any]:
     user = get_user_or_404(request.user_id)
     if not user.get("trading_enabled", True):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Trading is disabled for this account")
@@ -196,7 +196,7 @@ def open_trade(request: TradeRequest) -> dict[str, Any]:
     }
 
 
-def estimate_margin(request: TradeRequest) -> dict[str, Any]:
+def estimate_margin(request: TradeRequest) -> Dict[str, Any]:
     user = get_user_or_404(request.user_id)
     wallet = get_wallet(user["user_id"], request.account_type)
     order_type = _normalize_order_type(request.order_type)
@@ -213,7 +213,7 @@ def estimate_margin(request: TradeRequest) -> dict[str, Any]:
     }
 
 
-def close_trade(request: CloseTradeRequest) -> dict[str, Any]:
+def close_trade(request: CloseTradeRequest) -> Dict[str, Any]:
     trade = trades.find_one({"trade_id": request.trade_id})
     if not trade:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade not found")
@@ -283,8 +283,8 @@ def close_trade(request: CloseTradeRequest) -> dict[str, Any]:
     }
 
 
-def list_trades(account_type: AccountType | None = None, user_id: str | None = None, include_closed: bool = True) -> list[dict[str, Any]]:
-    query: dict[str, Any] = {}
+def list_trades(account_type: Optional[AccountType] = None, user_id: Optional[str] = None, include_closed: bool = True) -> List[Dict[str, Any]]:
+    query: Dict[str, Any] = {}
     if account_type:
         query["account_type"] = account_type.value
     if user_id:
@@ -295,15 +295,15 @@ def list_trades(account_type: AccountType | None = None, user_id: str | None = N
     return [clean_dict(trade) for trade in trades.find(query).sort("created_at", -1)]
 
 
-def list_portfolio(account_type: AccountType, user_id: str) -> list[dict[str, Any]]:
+def list_portfolio(account_type: AccountType, user_id: str) -> List[Dict[str, Any]]:
     return list_trades(account_type=account_type, user_id=user_id, include_closed=False)
 
 
-def list_trade_history(account_type: AccountType, user_id: str) -> list[dict[str, Any]]:
+def list_trade_history(account_type: AccountType, user_id: str) -> List[Dict[str, Any]]:
     return list_trades(account_type=account_type, user_id=user_id, include_closed=True)
 
 
-def get_trade(trade_id: str) -> dict[str, Any]:
+def get_trade(trade_id: str) -> Dict[str, Any]:
     trade = trades.find_one({"trade_id": trade_id})
     if not trade:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade not found")

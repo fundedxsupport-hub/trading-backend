@@ -1,5 +1,5 @@
 from datetime import timedelta
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
 from pymongo.errors import DuplicateKeyError
@@ -28,7 +28,7 @@ def _unique_value(collection, field: str, prefix: str, digits: int = 6) -> str:
             return value
 
 
-def serialize_user(user: dict[str, Any]) -> dict[str, Any]:
+def serialize_user(user: Dict[str, Any]) -> Dict[str, Any]:
     data = clean_dict(user)
     challenge_profit = float(data.get("challenge_profit", 0))
     challenge_loss = float(data.get("challenge_loss", 0))
@@ -51,7 +51,7 @@ def serialize_user(user: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def get_user_or_404(user_id: str) -> dict[str, Any]:
+def get_user_or_404(user_id: str) -> Dict[str, Any]:
     user = users.find_one({"user_id": user_id})
     if not user:
         user = users.find_one({"client_id": user_id})
@@ -60,11 +60,11 @@ def get_user_or_404(user_id: str) -> dict[str, Any]:
     return user
 
 
-def list_users() -> list[dict[str, Any]]:
+def list_users() -> List[Dict[str, Any]]:
     return [serialize_user(user) for user in users.find({}, {"mpin_hash": 0, "mpin_salt": 0}).sort("created_at", -1)]
 
 
-def create_user(payload: RegisterRequest) -> dict[str, str]:
+def create_user(payload: RegisterRequest) -> Dict[str, str]:
     email = normalize_email(payload.email)
     if users.count_documents({"email": email}, limit=1):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
@@ -142,7 +142,7 @@ def create_user(payload: RegisterRequest) -> dict[str, str]:
     }
 
 
-def sync_user(payload: RegisterRequest) -> dict[str, Any]:
+def sync_user(payload: RegisterRequest) -> Dict[str, Any]:
     email = normalize_email(payload.email)
     requested_client_id = (payload.client_id or "").strip().upper()
     mobile = payload.mobile.strip()
@@ -185,7 +185,7 @@ def sync_user(payload: RegisterRequest) -> dict[str, Any]:
     }
 
 
-def set_active_plan(request: PlanRequest) -> dict[str, Any]:
+def set_active_plan(request: PlanRequest) -> Dict[str, Any]:
     user = get_user_or_404(request.user_id)
     users.update_one(
         {"user_id": user["user_id"]},
@@ -194,7 +194,7 @@ def set_active_plan(request: PlanRequest) -> dict[str, Any]:
     return {"message": "Active plan updated", "user_id": user["user_id"], "active_plan_amount": request.amount}
 
 
-def update_wallet(user_id: str, account_type: AccountType, amount: float, note: str | None, admin: bool = True) -> dict[str, Any]:
+def update_wallet(user_id: str, account_type: AccountType, amount: float, note: Optional[str], admin: bool = True) -> Dict[str, Any]:
     user = get_user_or_404(user_id)
     field = "challenge_virtual_capital" if account_type == AccountType.challenge else "real_capital"
     timestamp = now_utc()
@@ -214,7 +214,7 @@ def update_wallet(user_id: str, account_type: AccountType, amount: float, note: 
     return get_wallet(user["user_id"], account_type)
 
 
-def get_wallet(user_id: str, account_type: AccountType) -> dict[str, Any]:
+def get_wallet(user_id: str, account_type: AccountType) -> Dict[str, Any]:
     user = serialize_user(get_user_or_404(user_id))
     if account_type == AccountType.challenge:
         return {
@@ -239,7 +239,7 @@ def get_wallet(user_id: str, account_type: AccountType) -> dict[str, Any]:
     }
 
 
-def create_support_ticket(payload: SupportCreateRequest) -> dict[str, Any]:
+def create_support_ticket(payload: SupportCreateRequest) -> Dict[str, Any]:
     user = get_user_or_404(payload.user_id)
     timestamp = now_utc()
     message = {"sender": "client", "message": payload.message.strip(), "timestamp": timestamp}
@@ -259,7 +259,7 @@ def create_support_ticket(payload: SupportCreateRequest) -> dict[str, Any]:
     return clean_dict(ticket)
 
 
-def reply_support_ticket(complaint_id: str, payload: SupportReplyRequest) -> dict[str, Any]:
+def reply_support_ticket(complaint_id: str, payload: SupportReplyRequest) -> Dict[str, Any]:
     message = {"sender": "admin", "message": payload.message.strip(), "timestamp": now_utc()}
     result = support_tickets.update_one(
         {"complaint_id": complaint_id},
@@ -270,11 +270,11 @@ def reply_support_ticket(complaint_id: str, payload: SupportReplyRequest) -> dic
     return clean_dict(support_tickets.find_one({"complaint_id": complaint_id}))
 
 
-def list_support_tickets() -> list[dict[str, Any]]:
+def list_support_tickets() -> List[Dict[str, Any]]:
     return [clean_dict(ticket) for ticket in support_tickets.find({}).sort("updated_at", -1)]
 
 
-def request_mpin_otp(user_id: str) -> dict[str, Any]:
+def request_mpin_otp(user_id: str) -> Dict[str, Any]:
     user = get_user_or_404(user_id)
     code = random_code(6)
     expires_at = now_utc() + timedelta(seconds=settings.otp_ttl_seconds)
@@ -291,7 +291,7 @@ def request_mpin_otp(user_id: str) -> dict[str, Any]:
     }
 
 
-def change_mpin(payload: ChangeMpinRequest) -> dict[str, str]:
+def change_mpin(payload: ChangeMpinRequest) -> Dict[str, str]:
     if payload.new_mpin != payload.confirm_mpin:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MPIN confirmation does not match")
     user = get_user_or_404(payload.user_id)
@@ -304,7 +304,7 @@ def change_mpin(payload: ChangeMpinRequest) -> dict[str, str]:
     return {"message": "MPIN changed successfully"}
 
 
-def login_with_mpin(payload: MpinLoginRequest) -> dict[str, str]:
+def login_with_mpin(payload: MpinLoginRequest) -> Dict[str, str]:
     user = get_user_or_404(payload.user_id)
     if not user.get("mpin_hash") or not user.get("mpin_salt"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MPIN is not set")
@@ -313,7 +313,7 @@ def login_with_mpin(payload: MpinLoginRequest) -> dict[str, str]:
     return {"message": "MPIN verified"}
 
 
-def list_referrals() -> list[dict[str, Any]]:
+def list_referrals() -> List[Dict[str, Any]]:
     return [
         {
             "referrer_user_id": item.get("referrer_user_id", ""),
@@ -328,7 +328,7 @@ def list_referrals() -> list[dict[str, Any]]:
     ]
 
 
-def set_referral_payment(referral_id: str, paid: bool) -> dict[str, str]:
+def set_referral_payment(referral_id: str, paid: bool) -> Dict[str, str]:
     result = referrals.update_one({"referred_user_id": referral_id}, {"$set": {"payment_status": "Paid" if paid else "Not Paid"}})
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Referral not found")
@@ -345,7 +345,7 @@ def admin_stats() -> AdminStatsResponse:
     )
 
 
-def get_risk_profile(user_id: str) -> dict[str, Any]:
+def get_risk_profile(user_id: str) -> Dict[str, Any]:
     user = serialize_user(get_user_or_404(user_id))
     profile = risk_profiles.find_one({"user_id": user["user_id"]}) or {}
     return {
@@ -360,7 +360,7 @@ def get_risk_profile(user_id: str) -> dict[str, Any]:
     }
 
 
-def update_risk_profile(user_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def update_risk_profile(user_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     user = get_user_or_404(user_id)
     updates = {"updated_at": now_utc()}
     user_updates = {"updated_at": now_utc()}
@@ -376,12 +376,13 @@ def update_risk_profile(user_id: str, payload: dict[str, Any]) -> dict[str, Any]
     return get_risk_profile(user["user_id"])
 
 
-def master_broker_status() -> dict[str, Any]:
+def master_broker_status() -> Dict[str, Any]:
     doc = master_broker.find_one({"broker_name": "upstox"}) or {}
     return {
         "broker_name": "upstox",
         "connected": bool(doc.get("connected", False) or settings.upstox_access_token),
         "demo_mode": settings.demo_broker_mode,
         "base_url": settings.upstox_base_url,
+        "account_id": settings.upstox_account_id or doc.get("account_id") or None,
         "has_access_token": bool(settings.upstox_access_token),
     }
