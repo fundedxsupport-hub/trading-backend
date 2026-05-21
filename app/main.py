@@ -66,6 +66,7 @@ from app.services.account_service import (
     update_wallet,
     update_risk_profile,
 )
+from app.services.market_service import get_option_chain, list_option_contracts
 from app.services.trade_service import close_app_trade
 from app.services.trade_service import close_trade as close_trade_service
 from app.services.trade_service import estimate_margin as estimate_margin_service
@@ -207,6 +208,24 @@ def mpin_login(request: MpinLoginRequest) -> Dict[str, Any]:
     return login_with_mpin(request)
 
 
+
+@app.get("/market/option-contracts")
+def option_contracts(
+    underlying: str,
+    expiry_date: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    return list_option_contracts(underlying, expiry_date)
+
+
+@app.get("/market/option-chain")
+def option_chain(
+    underlying: str,
+    expiry_date: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    return get_option_chain(underlying, expiry_date)
+
 @app.post("/trade", response_model=TradeResponse)
 def trade(request: AppTradeRequest, current_user: Dict[str, Any] = Depends(get_current_user)) -> Dict[str, Any]:
     return open_app_trade(current_user, request)
@@ -341,6 +360,7 @@ def admin_activate(request: UserIdRequest) -> Dict[str, Any]:
 @app.post("/verify-otp", response_model=MessageResponse)
 def verify_otp(request: VerifyOtpRequest) -> Dict[str, str]:
     return {"message": "OTP endpoint reserved for activation workflows"}
+
 
 
 
