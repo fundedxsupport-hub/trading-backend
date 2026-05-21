@@ -1,123 +1,59 @@
-# Funded Trading Backend
+# FundedX Trading Backend
 
-FastAPI backend for a funded trading app. It uses in-memory dictionaries for now, so data resets when the server restarts.
+FastAPI + MongoDB backend for Challenge Account, Real Account, admin APIs, wallet control, support tickets, MPIN, client IDs, referral history, risk control, and Upstox master-account trade execution.
 
-## Folder Structure
+## Setup
 
-```text
-trading-backend/
-  main.py
-  requirements.txt
-  .env.example
-  app/
-    main.py
-    models.py
-    storage.py
-    services/
-      broker_adapter.py
-      otp_service.py
-      trade_service.py
-      user_service.py
+```bash
+pip install -r requirements.txt
+copy .env.example .env
+uvicorn main:app --host 0.0.0.0 --port 9000 --reload
 ```
 
-## Run
+MongoDB must be running and `MONGO_URL` must point to it.
 
-```powershell
-cd C:\Users\HP\trading-backend
-py -m pip install -r requirements.txt
-py -m uvicorn app.main:app --reload
+## Main APIs
+
+- `POST /register` - create user, unique email/mobile/client ID `FIX123456`, referral code.
+- `GET /account/{user_id}` - account summary for Challenge and Real account top sections.
+- `GET /wallet/{account_type}/{user_id}` - wallet values. Challenge returns virtual capital, profit, loss, balance.
+- `POST /admin/wallet/challenge` - admin sets Challenge virtual capital.
+- `POST /admin/wallet/real` - admin sets Real capital.
+- `POST /plan/active` - set/replace active plan; only one active plan is stored.
+- `POST /support/tickets` - client support ticket with unique complaint ID.
+- `GET /admin/support` - admin support list with user name, user ID, complaint ID, message, timestamp.
+- `POST /admin/support/{complaint_id}/reply` - admin reply to client issue.
+- `POST /mpin/request-otp`, `POST /mpin/change`, `POST /mpin/login` - MPIN security flow.
+- `GET /admin/referrals` - referral tracking history with payment status.
+- `POST /trade` - Challenge or Real trade placement; Real trades can execute through Upstox.
+- `POST /close-trade` - closes trade and updates wallet P/L only after close.
+- `GET /admin/trades?account_type=real` - admin trade status.
+
+## Upstox
+
+Keep `DEMO_BROKER_MODE=true` for safe demo orders. For live execution set:
+
+```env
+DEMO_BROKER_MODE=false
+UPSTOX_ACCESS_TOKEN=your_access_token
+UPSTOX_BASE_URL=https://api.upstox.com/v2
 ```
 
-Open:
+Never commit real tokens in `.env.example`.
 
-```text
-http://127.0.0.1:8000/docs
-```
+## Secrets
 
-## APIs
+Store private values only in:
 
-### POST `/init-user`
+`C:\Users\HP\trading-backend\.env`
 
-Creates a new challenge user automatically.
+Recommended keys:
 
-### GET `/account/{user_id}`
+- `MONGO_URL`
+- `MONGO_DB_NAME`
+- `UPSTOX_ACCESS_TOKEN`
+- `UPSTOX_API_KEY`
+- `UPSTOX_API_SECRET`
+- `DEMO_BROKER_MODE=false` for live mode
 
-Returns account details.
-
-### POST `/trade`
-
-Places a virtual trade and deducts balance.
-
-```json
-{
-  "user_id": "USER_ID",
-  "symbol": "NIFTY",
-  "side": "BUY",
-  "amount": 1000,
-  "quantity": 1,
-  "entry_price": 23888.3,
-  "execute_on_broker": false
-}
-```
-
-Set `execute_on_broker` to `true` later when real broker API details are configured.
-
-### POST `/close-trade`
-
-Closes a trade and adds the original amount plus profit/loss.
-
-```json
-{
-  "trade_id": "TRADE_ID",
-  "profit_loss": 250
-}
-```
-
-### POST `/request-activation`
-
-Marks challenge as passed and disables trading until funded activation.
-
-```json
-{
-  "user_id": "USER_ID"
-}
-```
-
-### POST `/admin/activate`
-
-Generates a 6-digit OTP. OTP expires in 5 minutes.
-
-```json
-{
-  "user_id": "USER_ID"
-}
-```
-
-### POST `/verify-otp`
-
-Activates funded account. OTP is one-time use.
-
-```json
-{
-  "user_id": "USER_ID",
-  "otp": "123456"
-}
-```
-
-## Broker API Placeholder
-
-Real broker order placement is isolated in:
-
-```text
-app/services/broker_adapter.py
-```
-
-When you have broker details, fill:
-
-```text
-BROKER_BASE_URL=
-BROKER_API_KEY=
-BROKER_ACCESS_TOKEN=
-```
-
-Then replace the TODO section in `place_order()` with the real broker order API call.
+Do not place Upstox secrets inside `fundedx-app` or `fundedx-admin`.
