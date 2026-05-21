@@ -107,20 +107,15 @@ app.add_middleware(
 
 
 
-def get_current_user(
-    authorization: Optional[str] = Header(default=None),
-    x_session_token: Optional[str] = Header(default=None),
-    x_user_id: Optional[str] = Header(default=None),
-) -> Dict[str, Any]:
-    token = x_session_token
-    if authorization and authorization.lower().startswith("bearer "):
-        token = authorization.split(" ", 1)[1].strip()
-    if token:
-        return get_user_by_access_token(token)
-    if x_user_id:
-        logger.warning("X-User-Id fallback used; frontend should send Authorization bearer session token")
-        return get_user_or_404(x_user_id)
-    raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing logged-in session token")
+def get_current_user(authorization: str = Header(...)) -> Dict[str, Any]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization bearer token")
+
+    access_token = authorization.split(" ", 1)[1].strip()
+    if not access_token:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization bearer token")
+
+    return get_user_by_access_token(access_token)
 
 
 @app.exception_handler(HTTPException)
@@ -348,4 +343,6 @@ def admin_activate(request: UserIdRequest) -> Dict[str, Any]:
 @app.post("/verify-otp", response_model=MessageResponse)
 def verify_otp(request: VerifyOtpRequest) -> Dict[str, str]:
     return {"message": "OTP endpoint reserved for activation workflows"}
+
+
 
