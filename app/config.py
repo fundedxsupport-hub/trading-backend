@@ -42,11 +42,19 @@ class Settings:
 
     @property
     def parsed_instrument_map(self) -> Dict[str, str]:
+        default_map = {
+            "RELIANCE": "NSE_EQ|INE002A01018",
+            "SILVERMIC": "MCX_FO|477177",
+            "SILVERM": "MCX_FO|464151",
+            "SILVER": "MCX_FO|464150",
+        }
         try:
             data = json.loads(self.upstox_instrument_map or "{}")
         except json.JSONDecodeError:
-            return {}
-        return {str(key).upper(): str(value) for key, value in data.items()} if isinstance(data, dict) else {}
+            return default_map
+        if isinstance(data, dict):
+            default_map.update({str(key).upper(): str(value) for key, value in data.items()})
+        return default_map
 
     @property
     def parsed_underlying_map(self) -> Dict[str, str]:
@@ -94,4 +102,5 @@ def get_settings() -> Settings:
         upstox_instrument_map=os.getenv("UPSTOX_INSTRUMENT_MAP", "{}"),
         upstox_underlying_map=os.getenv("UPSTOX_UNDERLYING_MAP", "{}"),
     )
+
 
