@@ -1,4 +1,5 @@
-﻿import logging
+﻿import asyncio
+import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -70,7 +71,7 @@ from app.services.market_service import get_option_chain, list_option_contracts
 from app.services.trade_service import close_app_trade
 from app.services.trade_service import close_trade as close_trade_service
 from app.services.trade_service import estimate_margin as estimate_margin_service
-from app.services.trade_service import get_trade, list_portfolio, list_trade_history, list_trades, open_app_trade, open_trade
+from app.services.trade_service import get_trade, list_portfolio, list_trade_history, list_trades, open_app_trade, open_trade, sync_live_risk_once
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -78,16 +79,35 @@ settings = get_settings()
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
+async def _risk_monitor_loop() -> None:
+    while True:
+        try:
+            result = await asyncio.to_thread(sync_live_risk_once)
+            if result.get("closed"):
+                logger.info("Risk monitor closed trades: %s", result)
+        except Exception:
+            logger.exception("Risk monitor failed")
+        await asyncio.sleep(max(0.5, float(settings.risk_monitor_interval_seconds)))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s", settings.app_name)
+    risk_task = None
     try:
         setup_indexes()
         sync_master_broker()
+        risk_task = asyncio.create_task(_risk_monitor_loop())
         logger.info("Startup complete")
     except PyMongoError:
         logger.exception("MongoDB startup setup failed")
     yield
+    if risk_task:
+        risk_task.cancel()
+        try:
+            await risk_task
+        except asyncio.CancelledError:
+            pass
     logger.info("Shutting down %s", settings.app_name)
     close_connection()
 
@@ -280,6 +300,11 @@ def trade_history(account_type: AccountType, user_id: str) -> List[Dict[str, Any
 @app.get("/trade/{trade_id}")
 def trade_status(trade_id: str) -> Dict[str, Any]:
     return get_trade(trade_id)
+
+
+@app.post("/admin/risk/sync-live")
+def admin_sync_live_risk() -> Dict[str, Any]:
+    return sync_live_risk_once()
 
 
 @app.get("/broker/status", response_model=MasterBrokerStatusResponse)

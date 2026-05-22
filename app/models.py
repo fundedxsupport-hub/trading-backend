@@ -170,10 +170,24 @@ class AppTradeRequest(BaseModel):
     symbol: str = Field(..., min_length=1)
     side: TradeSide
     quantity: int = Field(..., gt=0)
+    amount: Optional[float] = Field(default=None, gt=0)
+    entry_price: Optional[float] = Field(default=None, gt=0)
+    account_type: Optional[AccountType] = None
+    instrument_token: Optional[str] = None
+    order_type: str = "MARKET"
+    product: Optional[str] = None
+    execute_on_broker: bool = True
+    limit_price: Optional[float] = Field(default=None, gt=0)
+    trigger_price: Optional[float] = Field(default=None, ge=0)
+    stop_loss: Optional[float] = Field(default=None, gt=0)
+    target_price: Optional[float] = Field(default=None, gt=0)
+    option_type: Optional[str] = None
+    strike: Optional[float] = None
 
 
 class AppCloseTradeRequest(BaseModel):
     trade_id: str
+    current_price: Optional[float] = None
 
 
 class SessionResponse(BaseModel):
@@ -199,6 +213,7 @@ class TradeRequest(BaseModel):
     limit_price: Optional[float] = Field(default=None, gt=0)
     trigger_price: Optional[float] = Field(default=None, ge=0)
     stop_loss: Optional[float] = Field(default=None, gt=0)
+    target_price: Optional[float] = Field(default=None, gt=0)
     option_type: Optional[str] = None
     strike: Optional[float] = None
     client_id: Optional[str] = None
