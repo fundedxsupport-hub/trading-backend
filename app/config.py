@@ -33,6 +33,8 @@ class Settings:
     default_max_position_size: int = 0
     upstox_instrument_map: str = "{}"
     upstox_underlying_map: str = "{}"
+    option_chain_base_url: str = "http://15.207.85.21:8000"
+    risk_monitor_interval_seconds: float = 1.0
 
     @property
     def parsed_cors_origins(self) -> List[str]:
@@ -101,6 +103,8 @@ def get_settings() -> Settings:
         default_max_position_size=int(os.getenv("DEFAULT_MAX_POSITION_SIZE", "0")),
         upstox_instrument_map=os.getenv("UPSTOX_INSTRUMENT_MAP", "{}"),
         upstox_underlying_map=os.getenv("UPSTOX_UNDERLYING_MAP", "{}"),
+        option_chain_base_url=os.getenv("OPTION_CHAIN_BASE_URL", "http://15.207.85.21:8000"),
+        risk_monitor_interval_seconds=float(os.getenv("RISK_MONITOR_INTERVAL_SECONDS", "1.0")),
     )
 
 

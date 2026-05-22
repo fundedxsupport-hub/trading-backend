@@ -13,6 +13,7 @@ from app.utils import clean_dict, new_uuid, now_utc
 
 settings = get_settings()
 _INSTRUMENT_CACHE: Dict[str, str] = {}
+DEFAULT_MAX_LOSS_PERCENT = 0.20
 
 
 def _capital_field(account_type: AccountType) -> str:
@@ -76,15 +77,63 @@ def _calculate_profit_loss(side: str, entry_price: float, exit_price: float, qua
     return round((exit_price - entry_price) * quantity * multiplier, 2)
 
 
+def _account_capital(user: Dict[str, Any], account_type: AccountType) -> float:
+    return float(user.get(_capital_field(account_type), 0) or 0)
+
+
+def _max_loss_amount(user: Dict[str, Any], account_type: AccountType, risk_profile: Optional[Dict[str, Any]] = None) -> float:
+    capital = _account_capital(user, account_type)
+    if capital <= 0:
+        return 0.0
+    profile = risk_profile or {}
+    configured = float(profile.get("max_loss_limit", user.get("max_loss_limit", 0)) or 0)
+    default_limit = round(capital * DEFAULT_MAX_LOSS_PERCENT, 2)
+    if configured <= 0 or configured == settings.default_max_loss_limit:
+        return default_limit
+    return configured if configured < default_limit else default_limit
+
+
+def _current_total_loss(user: Dict[str, Any], account_type: AccountType) -> float:
+    realized_loss = float(user.get("real_loss" if account_type == AccountType.real else "challenge_loss", 0) or 0)
+    open_loss = 0.0
+    for trade in trades.find({"user_id": user["user_id"], "account_type": account_type.value, "is_open": True}):
+        entry_price = float(trade.get("entry_price") or 0)
+        current_price = float(trade.get("current_price") or entry_price)
+        quantity = float(trade.get("quantity") or 0)
+        pnl = _calculate_profit_loss(str(trade.get("side", "BUY")), entry_price, current_price, quantity)
+        if pnl < 0:
+            open_loss += abs(pnl)
+    return round(realized_loss + open_loss, 2)
+
+
+def _validate_stop_loss(user: Dict[str, Any], request: TradeRequest, risk_profile: Dict[str, Any]) -> None:
+    if request.stop_loss is None:
+        return
+    max_loss = _max_loss_amount(user, request.account_type, risk_profile)
+    if max_loss <= 0:
+        return
+    entry_price = _entry_price(request)
+    quantity = float(request.quantity)
+    sl_loss = -_calculate_profit_loss(request.side.value, entry_price, float(request.stop_loss), quantity)
+    if sl_loss <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Stop loss is not valid for this order side")
+    remaining_risk = max_loss - _current_total_loss(user, request.account_type)
+    if sl_loss > remaining_risk:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Stop loss risk exceeds allowed 20% capital risk. Remaining risk: {max(0.0, remaining_risk):.2f}",
+        )
+
+
 def _risk_breach_reason(user: Dict[str, Any], account_type: AccountType) -> Optional[str]:
     wallet = get_wallet(user["user_id"], account_type)
     balance = float(wallet["balance"])
-    capital = float(user.get(_capital_field(account_type), 0))
-    max_loss_limit = float(user.get("max_loss_limit", 0) or 0)
+    capital = _account_capital(user, account_type)
+    max_loss_limit = _max_loss_amount(user, account_type)
     max_drawdown_limit = float(user.get("max_drawdown_limit", 0) or 0)
 
     if max_loss_limit > 0 and balance <= capital - max_loss_limit:
-        return "Max loss limit hit"
+        return "20% max loss limit hit"
     if max_drawdown_limit > 0 and balance <= capital - max_drawdown_limit:
         return "Max drawdown hit"
     return None
@@ -162,18 +211,28 @@ def resolve_instrument_token(symbol: str) -> str:
 
 
 def open_app_trade(user: Dict[str, Any], request: AppTradeRequest) -> Dict[str, Any]:
-    account_type = get_user_default_account_type(user)
-    instrument_token = resolve_instrument_token(request.symbol)
+    account_type = request.account_type or get_user_default_account_type(user)
+    instrument_token = request.instrument_token or resolve_instrument_token(request.symbol)
+    entry_price = request.limit_price if request.order_type.upper() == "LIMIT" and request.limit_price else request.entry_price
+    amount = request.amount or ((entry_price or 1) * request.quantity)
     trade_request = TradeRequest(
         user_id=user["user_id"],
         symbol=request.symbol.strip().upper(),
         side=request.side,
-        amount=1,
+        amount=amount,
         quantity=request.quantity,
         account_type=account_type,
         instrument_token=instrument_token,
-        order_type="MARKET",
-        execute_on_broker=True,
+        order_type=request.order_type,
+        product=request.product,
+        execute_on_broker=request.execute_on_broker,
+        entry_price=entry_price,
+        limit_price=request.limit_price,
+        trigger_price=request.trigger_price,
+        stop_loss=request.stop_loss,
+        target_price=request.target_price,
+        option_type=request.option_type,
+        strike=request.strike,
     )
     return open_trade(trade_request)
 
@@ -184,7 +243,7 @@ def close_app_trade(user: Dict[str, Any], request: AppCloseTradeRequest) -> Dict
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade not found")
     if trade.get("user_id") != user["user_id"]:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Trade does not belong to the logged-in user")
-    return close_trade(CloseTradeRequest(trade_id=request.trade_id, triggered_by="app"))
+    return close_trade(CloseTradeRequest(trade_id=request.trade_id, current_price=request.current_price, triggered_by="app"))
 
 
 def open_trade(request: TradeRequest) -> Dict[str, Any]:
@@ -197,6 +256,10 @@ def open_trade(request: TradeRequest) -> Dict[str, Any]:
     required_margin = broker_adapter.estimate_margin(request)
     order_type = _normalize_order_type(request.order_type)
     risk_profile = get_risk_profile(user["user_id"])
+    max_loss = _max_loss_amount(user, request.account_type, risk_profile)
+    if max_loss > 0 and _current_total_loss(user, request.account_type) >= max_loss:
+        _apply_risk_lock(user, request.account_type)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="20% max loss limit hit. Trading is locked.")
 
     max_position_size = int(risk_profile.get("max_position_size", 0) or 0)
     if max_position_size > 0 and request.quantity > max_position_size:
@@ -204,6 +267,8 @@ def open_trade(request: TradeRequest) -> Dict[str, Any]:
 
     if available_balance < required_margin:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Insufficient virtual funded balance")
+
+    _validate_stop_loss(user, request, risk_profile)
 
     if request.account_type == AccountType.real and user.get("real_status") not in {None, "active", "running"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Real account is not approved")
@@ -238,6 +303,9 @@ def open_trade(request: TradeRequest) -> Dict[str, Any]:
         "trigger_price": request.trigger_price,
         "manual_stop_loss": request.stop_loss,
         "backend_stop_loss": request.trigger_price,
+        "target_price": request.target_price,
+        "max_loss_limit": max_loss,
+        "risk_limit_percent": DEFAULT_MAX_LOSS_PERCENT * 100,
         "broker_order_id": broker_result.get("broker_order_id"),
         "execution_status": execution_status.value if hasattr(execution_status, "value") else str(execution_status),
         "status": "OPEN" if is_open else "REJECTED",
@@ -266,6 +334,9 @@ def open_trade(request: TradeRequest) -> Dict[str, Any]:
             "execution_status": trade["execution_status"],
             "required_margin": required_margin,
             "broker_order_id": trade["broker_order_id"],
+            "entry_price": entry_price,
+            "stop_loss": request.stop_loss,
+            "target_price": request.target_price,
         },
     )
 
@@ -298,6 +369,113 @@ def estimate_margin(request: TradeRequest) -> Dict[str, Any]:
         "side": request.side.value,
         "product": request.product or "I",
     }
+
+
+def _extract_feed_ltp(feed: Any) -> Optional[float]:
+    if not isinstance(feed, dict):
+        return None
+    direct = feed.get("ltpc")
+    if isinstance(direct, dict):
+        value = direct.get("ltp")
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+    full_feed = feed.get("fullFeed")
+    if isinstance(full_feed, dict):
+        market = full_feed.get("marketFF") or full_feed.get("indexFF")
+        if isinstance(market, dict) and isinstance(market.get("ltpc"), dict):
+            value = market["ltpc"].get("ltp")
+            if value is not None:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+def _live_price_map() -> Dict[str, float]:
+    url = f"{settings.option_chain_base_url.rstrip('/')}/option-chain"
+    try:
+        response = requests.get(url, timeout=4)
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException:
+        return {}
+    feeds = payload.get("feeds") if isinstance(payload, dict) else None
+    if not isinstance(feeds, dict):
+        return {}
+    prices: Dict[str, float] = {}
+    for instrument_key, feed in feeds.items():
+        ltp = _extract_feed_ltp(feed)
+        if ltp is not None and ltp > 0:
+            prices[str(instrument_key)] = ltp
+    return prices
+
+
+def sync_live_risk_once() -> Dict[str, Any]:
+    prices = _live_price_map()
+    if not prices:
+        return {"checked": 0, "closed": 0, "updated": 0, "reason": "no_live_prices"}
+
+    checked = 0
+    updated = 0
+    closed = 0
+    now = now_utc()
+    open_trades = list(trades.find({"account_type": AccountType.real.value, "is_open": True}))
+
+    for trade in open_trades:
+        instrument_key = str(trade.get("instrument_token") or trade.get("symbol") or "")
+        current_price = prices.get(instrument_key)
+        if current_price is None:
+            continue
+        checked += 1
+        entry_price = float(trade.get("entry_price") or trade.get("amount") or 0)
+        quantity = float(trade.get("quantity") or 0)
+        pnl = _calculate_profit_loss(str(trade.get("side", "BUY")), entry_price, current_price, quantity)
+        trades.update_one(
+            {"trade_id": trade["trade_id"], "is_open": True},
+            {"$set": {"current_price": current_price, "unrealized_profit_loss": pnl, "updated_at": now}},
+        )
+        updated += 1
+
+        close_reason: Optional[str] = None
+        side = str(trade.get("side", "BUY")).upper()
+        stop_loss = trade.get("manual_stop_loss")
+        target = trade.get("target_price")
+        if stop_loss is not None:
+            stop = float(stop_loss)
+            if (side == TradeSide.buy.value and current_price <= stop) or (side == TradeSide.sell.value and current_price >= stop):
+                close_reason = "stop_loss_hit"
+        if close_reason is None and target is not None:
+            target_price = float(target)
+            if (side == TradeSide.buy.value and current_price >= target_price) or (side == TradeSide.sell.value and current_price <= target_price):
+                close_reason = "target_hit"
+
+        user = get_user_or_404(str(trade["user_id"]))
+        max_loss = _max_loss_amount(user, AccountType.real)
+        if close_reason is None and max_loss > 0:
+            current_loss = _current_total_loss(user, AccountType.real)
+            if current_loss >= max_loss:
+                close_reason = "20_percent_max_loss_hit"
+
+        if close_reason is None:
+            continue
+
+        try:
+            close_trade(
+                CloseTradeRequest(
+                    trade_id=str(trade["trade_id"]),
+                    current_price=current_price,
+                    triggered_by=close_reason,
+                )
+            )
+            closed += 1
+        except HTTPException:
+            _log_trade_event(str(trade["trade_id"]), "auto_close_failed", {"reason": close_reason, "current_price": current_price})
+
+    return {"checked": checked, "closed": closed, "updated": updated}
 
 
 def close_trade(request: CloseTradeRequest) -> Dict[str, Any]:
