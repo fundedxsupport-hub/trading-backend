@@ -35,6 +35,7 @@ class Settings:
     upstox_underlying_map: str = "{}"
     option_chain_base_url: str = "http://15.207.85.21:8000"
     risk_monitor_interval_seconds: float = 1.0
+    referral_reward_amount: float = 400.0
 
     @property
     def parsed_cors_origins(self) -> List[str]:
@@ -105,6 +106,7 @@ def get_settings() -> Settings:
         upstox_underlying_map=os.getenv("UPSTOX_UNDERLYING_MAP", "{}"),
         option_chain_base_url=os.getenv("OPTION_CHAIN_BASE_URL", "http://15.207.85.21:8000"),
         risk_monitor_interval_seconds=float(os.getenv("RISK_MONITOR_INTERVAL_SECONDS", "1.0")),
+        referral_reward_amount=float(os.getenv("REFERRAL_REWARD_AMOUNT", "400")),
     )
 
 

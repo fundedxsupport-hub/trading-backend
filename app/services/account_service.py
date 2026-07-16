@@ -5,7 +5,7 @@ from fastapi import HTTPException, status
 from pymongo.errors import DuplicateKeyError
 
 from app.config import get_settings
-from app.database import master_broker, otps, referrals, risk_profiles, support_tickets, trades, users, wallet_logs
+from app.database import master_broker, otps, referral_settings, referrals, risk_profiles, support_tickets, trades, users, wallet_logs
 from app.models import (
     AccountType,
     AdminStatsResponse,
@@ -26,6 +26,46 @@ def _unique_value(collection, field: str, prefix: str, digits: int = 6) -> str:
         value = public_id(prefix, digits)
         if collection.count_documents({field: value}, limit=1) == 0:
             return value
+
+
+def get_referral_settings() -> Dict[str, Any]:
+    doc = referral_settings.find_one({"key": "main"}) or {}
+    return {
+        "reward_amount": float(doc.get("reward_amount", settings.referral_reward_amount)),
+        "updated_at": doc.get("updated_at"),
+    }
+
+
+def update_referral_settings(reward_amount: float) -> Dict[str, Any]:
+    timestamp = now_utc()
+    referral_settings.update_one(
+        {"key": "main"},
+        {"$set": {"key": "main", "reward_amount": float(reward_amount), "updated_at": timestamp}},
+        upsert=True,
+    )
+    return get_referral_settings()
+
+
+def _serialize_referral(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "referral_id": item.get("referral_id") or item.get("referred_user_id", ""),
+        "referral_code": item.get("referral_code", ""),
+        "referrer_user_id": item.get("referrer_user_id", ""),
+        "referrer_client_id": item.get("referrer_client_id", ""),
+        "referrer_name": item.get("referrer_name", ""),
+        "referred_user_id": item.get("referred_user_id", ""),
+        "referred_client_id": item.get("referred_client_id", ""),
+        "referred_name": item.get("referred_name", ""),
+        "referred_email": item.get("referred_email") or "unknown@example.com",
+        "plan_amount": float(item.get("plan_amount", 0) or 0),
+        "reward_amount": float(item.get("reward_amount", 0) or 0),
+        "registration_status": item.get("registration_status", "Registered"),
+        "payment_status": item.get("payment_status", "pending"),
+        "reward_status": item.get("reward_status", "pending"),
+        "date_time": item.get("created_at"),
+        "paid_at": item.get("paid_at"),
+        "reversed_at": item.get("reversed_at"),
+    }
 
 
 def serialize_user(user: Dict[str, Any]) -> Dict[str, Any]:
@@ -83,6 +123,12 @@ def create_user(payload: RegisterRequest) -> Dict[str, Any]:
     if payload.mpin:
         mpin_hash, mpin_salt = hash_secret(payload.mpin)
     access_token = new_uuid()
+    referral_code_input = (payload.referral_code or "").strip().upper() or None
+    referrer = None
+    if referral_code_input:
+        referrer = users.find_one({"referral_code": referral_code_input})
+        if not referrer:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid referral code")
 
     user = {
         "user_id": user_id,
@@ -92,7 +138,7 @@ def create_user(payload: RegisterRequest) -> Dict[str, Any]:
         "mobile": payload.mobile,
         "external_uid": (payload.external_uid or "").strip() or None,
         "referral_code": referral_code,
-        "referred_by": (payload.referral_code or "").strip().upper() or None,
+        "referred_by": referral_code_input,
         "active_plan_amount": settings.default_challenge_capital,
         "account_type": AccountType.challenge.value,
         "challenge_status": "running",
@@ -122,18 +168,28 @@ def create_user(payload: RegisterRequest) -> Dict[str, Any]:
     except DuplicateKeyError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email, mobile, or client ID already exists")
 
-    if user["referred_by"]:
-        referrer = users.find_one({"referral_code": user["referred_by"]})
+    if user["referred_by"] and referrer:
+        current_settings = get_referral_settings()
         referrals.insert_one(
             {
-                "referrer_user_id": referrer["user_id"] if referrer else "",
-                "referrer_name": referrer["name"] if referrer else "",
+                "referral_id": new_uuid(),
+                "referrer_user_id": referrer["user_id"],
+                "referrer_client_id": referrer.get("client_id", ""),
+                "referrer_name": referrer.get("name", ""),
                 "referral_code": user["referred_by"],
                 "referred_user_id": user_id,
+                "referred_client_id": client_id,
                 "referred_name": user["name"],
-                "registration_status": "Registered",
-                "payment_status": "Not Paid",
+                "referred_email": user["email"],
+                "plan_amount": float(user.get("active_plan_amount") or 0),
+                "reward_amount": float(current_settings["reward_amount"]),
+                "registration_status": "registered",
+                "payment_status": "pending",
+                "reward_status": "pending",
                 "created_at": created_at,
+                "updated_at": created_at,
+                "paid_at": None,
+                "reversed_at": None,
             }
         )
 
@@ -335,25 +391,41 @@ def login_with_mpin(payload: MpinLoginRequest) -> Dict[str, Any]:
 
 
 def list_referrals() -> List[Dict[str, Any]]:
-    return [
-        {
-            "referrer_user_id": item.get("referrer_user_id", ""),
-            "referrer_name": item.get("referrer_name", ""),
-            "referred_user_id": item.get("referred_user_id", ""),
-            "referred_name": item.get("referred_name", ""),
-            "date_time": item.get("created_at"),
-            "registration_status": item.get("registration_status", "Registered"),
-            "payment_status": item.get("payment_status", "Not Paid"),
-        }
-        for item in referrals.find({}).sort("created_at", -1)
-    ]
+    return [_serialize_referral(item) for item in referrals.find({}).sort("created_at", -1)]
 
 
 def set_referral_payment(referral_id: str, paid: bool) -> Dict[str, str]:
-    result = referrals.update_one({"referred_user_id": referral_id}, {"$set": {"payment_status": "Paid" if paid else "Not Paid"}})
+    query = {"$or": [{"referral_id": referral_id}, {"referred_user_id": referral_id}]}
+    timestamp = now_utc()
+    update = {
+        "payment_status": "paid" if paid else "pending",
+        "reward_status": "paid" if paid else "pending",
+        "updated_at": timestamp,
+        "paid_at": timestamp if paid else None,
+    }
+    result = referrals.update_one(query, {"$set": update})
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Referral not found")
     return {"message": "Referral payment status updated"}
+
+
+def reverse_referral_payment(referral_id: str) -> Dict[str, str]:
+    query = {"$or": [{"referral_id": referral_id}, {"referred_user_id": referral_id}]}
+    timestamp = now_utc()
+    result = referrals.update_one(
+        query,
+        {
+            "$set": {
+                "payment_status": "reversed",
+                "reward_status": "reversed",
+                "updated_at": timestamp,
+                "reversed_at": timestamp,
+            }
+        },
+    )
+    if result.matched_count == 0:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Referral not found")
+    return {"message": "Referral reward reversed"}
 
 
 def admin_stats() -> AdminStatsResponse:

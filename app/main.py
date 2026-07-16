@@ -29,6 +29,8 @@ from app.models import (
     MpinLoginRequest,
     PlanRequest,
     ReferralRecord,
+    ReferralSettingsRequest,
+    ReferralSettingsResponse,
     RiskProfileRequest,
     RiskProfileResponse,
     RegisterRequest,
@@ -49,6 +51,7 @@ from app.services.account_service import (
     change_mpin,
     create_support_ticket,
     create_user,
+    get_referral_settings,
     get_risk_profile,
     get_user_or_404,
     get_wallet,
@@ -62,8 +65,10 @@ from app.services.account_service import (
     request_mpin_otp,
     serialize_user,
     set_active_plan,
+    reverse_referral_payment,
     set_referral_payment,
     sync_user,
+    update_referral_settings,
     update_wallet,
     update_risk_profile,
 )
@@ -172,7 +177,7 @@ def home() -> Dict[str, Any]:
 
 
 @app.post("/register", response_model=RegisterResponse, status_code=201)
-def register(request: RegisterRequest) -> Dict[str, str]:
+def register(request: RegisterRequest) -> Dict[str, Any]:
     return create_user(request)
 
 
@@ -347,14 +352,29 @@ def admin_trades(account_type: Optional[AccountType] = None, user_id: Optional[s
     return list_trades(account_type, user_id)
 
 
+@app.get("/admin/referral-settings", response_model=ReferralSettingsResponse)
+def admin_get_referral_settings() -> Dict[str, Any]:
+    return get_referral_settings()
+
+
+@app.post("/admin/referral-settings", response_model=ReferralSettingsResponse)
+def admin_update_referral_settings(request: ReferralSettingsRequest) -> Dict[str, Any]:
+    return update_referral_settings(request.reward_amount)
+
+
 @app.get("/admin/referrals", response_model=List[ReferralRecord])
 def admin_referrals() -> List[Dict[str, Any]]:
     return list_referrals()
 
 
-@app.post("/admin/referrals/{referred_user_id}/payment", response_model=MessageResponse)
-def admin_referral_payment(referred_user_id: str, paid: bool = True) -> Dict[str, str]:
-    return set_referral_payment(referred_user_id, paid)
+@app.post("/admin/referrals/{referral_id}/payment", response_model=MessageResponse)
+def admin_referral_payment(referral_id: str, paid: bool = True) -> Dict[str, str]:
+    return set_referral_payment(referral_id, paid)
+
+
+@app.post("/admin/referrals/{referral_id}/reverse", response_model=MessageResponse)
+def admin_referral_reverse(referral_id: str) -> Dict[str, str]:
+    return reverse_referral_payment(referral_id)
 
 
 @app.get("/admin/risk/{user_id}", response_model=RiskProfileResponse)
