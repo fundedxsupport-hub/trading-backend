@@ -297,13 +297,32 @@ class BrokerConnectionResponse(BrokerConnection):
 
 
 class ReferralRecord(BaseModel):
+    referral_id: str
+    referral_code: str
     referrer_user_id: str
+    referrer_client_id: str = ""
     referrer_name: str
     referred_user_id: str
+    referred_client_id: str = ""
     referred_name: str
-    date_time: datetime
+    referred_email: EmailStr
+    plan_amount: float = 0
+    reward_amount: float = 0
     registration_status: str
     payment_status: str
+    reward_status: str = "pending"
+    date_time: datetime
+    paid_at: Optional[datetime] = None
+    reversed_at: Optional[datetime] = None
+
+
+class ReferralSettingsRequest(BaseModel):
+    reward_amount: float = Field(..., ge=0)
+
+
+class ReferralSettingsResponse(BaseModel):
+    reward_amount: float
+    updated_at: Optional[datetime] = None
 
 
 class AdminStatsResponse(BaseModel):

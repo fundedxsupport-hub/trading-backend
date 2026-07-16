@@ -15,6 +15,7 @@ users = db["users"]
 trades = db["trades"]
 support_tickets = db["support_tickets"]
 referrals = db["referrals"]
+referral_settings = db["referral_settings"]
 wallet_logs = db["wallet_logs"]
 otps = db["otps"]
 broker_connections = db["broker_connections"]
@@ -34,6 +35,9 @@ def setup_indexes() -> None:
         (trades, [("trade_id", ASCENDING)], {"unique": True}),
         (trades, [("user_id", ASCENDING), ("created_at", ASCENDING)], {}),
         (referrals, [("referrer_user_id", ASCENDING), ("created_at", ASCENDING)], {}),
+        (referrals, [("referred_user_id", ASCENDING)], {"unique": True}),
+        (referrals, [("reward_status", ASCENDING), ("created_at", ASCENDING)], {}),
+        (referral_settings, [("key", ASCENDING)], {"unique": True}),
         (otps, [("user_id", ASCENDING), ("purpose", ASCENDING)], {}),
         (broker_connections, [("user_id", ASCENDING)], {"unique": True}),
         (risk_profiles, [("user_id", ASCENDING)], {"unique": True}),
