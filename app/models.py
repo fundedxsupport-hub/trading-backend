@@ -42,6 +42,7 @@ class RegisterRequest(BaseModel):
     mpin: Optional[str] = Field(default=None, min_length=4, max_length=6)
     client_id: Optional[str] = None
     external_uid: Optional[str] = None
+    phone_verification_token: Optional[str] = None
 
     @field_validator("mobile")
     @classmethod
@@ -337,8 +338,27 @@ class SyncUserResponse(BaseModel):
     message: str
     user_id: str
     client_id: str
-    access_token: str
     account_type: AccountType = AccountType.challenge
+
+
+class PhoneOtpSendRequest(BaseModel):
+    mobile: str = Field(..., min_length=10, max_length=20)
+
+
+class PhoneOtpSendResponse(BaseModel):
+    challenge_id: str
+    message: str
+
+
+class PhoneOtpVerifyRequest(BaseModel):
+    mobile: str = Field(..., min_length=10, max_length=20)
+    challenge_id: str = Field(..., min_length=1, max_length=128)
+    code: str = Field(..., min_length=4, max_length=8)
+
+
+class PhoneOtpVerifyResponse(BaseModel):
+    verification_token: str
+    message: str
 
 
 class RiskProfileRequest(BaseModel):

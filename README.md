@@ -12,6 +12,12 @@ uvicorn main:app --host 0.0.0.0 --port 9000 --reload
 
 MongoDB must be running and `MONGO_URL` must point to it.
 
+## Admin API authentication
+
+The admin app sends its Firebase ID token to the trading API. The API verifies that token with the Firebase Admin SDK and only authorizes Firebase UIDs listed in `ADMIN_UIDS` (comma-separated). Set `FIREBASE_PROJECT_ID` to the app's Firebase project and add the intended admin user's UID to `ADMIN_UIDS` in the backend environment. Find the UID in Firebase Console under Authentication > Users.
+
+The Firebase Admin SDK also needs Application Default Credentials. On Render, provide a service-account key as a Secret File and set `GOOGLE_APPLICATION_CREDENTIALS` to its path. Do not commit the key or send it in chat. If the UID allowlist is empty, admin API calls fail closed with HTTP 503; missing/invalid tokens get HTTP 401 and signed-in non-admins get HTTP 403.
+
 ## Main APIs
 
 - `POST /register` - create user, unique email/mobile/client ID `FIX123456`, referral code.

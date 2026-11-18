@@ -16,6 +16,7 @@ from app.models import (
     SupportCreateRequest,
     SupportReplyRequest,
 )
+from app.services.phone_otp_service import consume_phone_verification
 from app.utils import clean_dict, hash_secret, new_uuid, normalize_email, now_utc, public_id, random_code, verify_secret
 
 settings = get_settings()
@@ -104,7 +105,7 @@ def list_users() -> List[Dict[str, Any]]:
     return [serialize_user(user) for user in users.find({}, {"mpin_hash": 0, "mpin_salt": 0}).sort("created_at", -1)]
 
 
-def create_user(payload: RegisterRequest) -> Dict[str, Any]:
+def create_user(payload: RegisterRequest, firebase_uid: Optional[str] = None) -> Dict[str, Any]:
     email = normalize_email(payload.email)
     if users.count_documents({"email": email}, limit=1):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
@@ -136,7 +137,7 @@ def create_user(payload: RegisterRequest) -> Dict[str, Any]:
         "name": payload.name.strip(),
         "email": email,
         "mobile": payload.mobile,
-        "external_uid": (payload.external_uid or "").strip() or None,
+        "external_uid": firebase_uid,
         "referral_code": referral_code,
         "referred_by": referral_code_input,
         "active_plan_amount": settings.default_challenge_capital,
@@ -204,54 +205,44 @@ def create_user(payload: RegisterRequest) -> Dict[str, Any]:
     }
 
 
-def sync_user(payload: RegisterRequest) -> Dict[str, Any]:
+def sync_user(payload: RegisterRequest, verified_uid: str) -> Dict[str, Any]:
     email = normalize_email(payload.email)
-    requested_client_id = (payload.client_id or "").strip().upper()
-    mobile = payload.mobile.strip()
-    query = {
-        "$or": [
-            {"email": email},
-            {"mobile": mobile},
-        ]
-    }
-    if requested_client_id:
-        query["$or"].append({"client_id": requested_client_id})
-    if payload.external_uid:
-        query["$or"].append({"external_uid": payload.external_uid.strip()})
-
-    existing = users.find_one(query)
+    existing = users.find_one({"external_uid": verified_uid})
     if existing:
-        access_token = existing.get("access_token") or new_uuid()
-        updates = {
-            "name": payload.name.strip(),
-            "email": email,
-            "mobile": mobile,
-            "access_token": access_token,
-            "account_type": existing.get("account_type") or AccountType.challenge.value,
-            "updated_at": now_utc(),
-        }
-        if requested_client_id:
-            updates["client_id"] = requested_client_id
-        if payload.external_uid:
-            updates["external_uid"] = payload.external_uid.strip()
-        users.update_one({"user_id": existing["user_id"]}, {"$set": updates})
         user = serialize_user(get_user_or_404(existing["user_id"]))
         return {
             "message": "User synced",
             "user_id": user["user_id"],
             "client_id": user["client_id"],
-            "access_token": access_token,
             "account_type": AccountType.challenge,
         }
 
-    created = create_user(payload)
+    # Never attach a Firebase identity to a legacy account based only on
+    # caller-supplied email, phone, or client ID. That needs a separate
+    # verified migration path.
+    if users.find_one({"$or": [{"email": email}, {"mobile": payload.mobile.strip()}]}):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Existing account needs verified identity linking",
+        )
+    if not consume_phone_verification(
+        payload.phone_verification_token or "", payload.mobile
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Verify this mobile number with OTP before registration",
+        )
+    created = create_user(payload, firebase_uid=verified_uid)
     return {
         "message": "User synced",
         "user_id": created["user_id"],
         "client_id": created["client_id"],
-        "access_token": created["access_token"],
         "account_type": AccountType.challenge,
     }
+
+
+def get_user_by_firebase_uid(uid: str) -> Optional[Dict[str, Any]]:
+    return users.find_one({"external_uid": uid})
 
 
 def set_active_plan(request: PlanRequest) -> Dict[str, Any]:

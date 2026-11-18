@@ -26,6 +26,9 @@ class Settings:
     upstox_validity: str = "DAY"
     demo_broker_mode: bool = True
     admin_api_key: str = ""
+    firebase_project_id: str = "fundedxindia-5d93e"
+    twofactor_api_key: str = ""
+    admin_uids: str = ""
     default_challenge_capital: float = 100000.0
     default_max_loss_limit: float = 10000.0
     default_max_drawdown_limit: float = 10000.0
@@ -97,6 +100,9 @@ def get_settings() -> Settings:
         upstox_validity=os.getenv("UPSTOX_VALIDITY", "DAY"),
         demo_broker_mode=os.getenv("DEMO_BROKER_MODE", "true").lower() == "true",
         admin_api_key=os.getenv("ADMIN_API_KEY", ""),
+        firebase_project_id=os.getenv("FIREBASE_PROJECT_ID", "fundedxindia-5d93e"),
+        twofactor_api_key=os.getenv("TWOFACTOR_API_KEY", ""),
+        admin_uids=os.getenv("ADMIN_UIDS", ""),
         default_challenge_capital=float(os.getenv("DEFAULT_CHALLENGE_CAPITAL", "100000")),
         default_max_loss_limit=float(os.getenv("DEFAULT_MAX_LOSS_LIMIT", "10000")),
         default_max_drawdown_limit=float(os.getenv("DEFAULT_MAX_DRAWDOWN_LIMIT", "10000")),

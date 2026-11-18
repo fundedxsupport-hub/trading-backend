@@ -1,10 +1,10 @@
-﻿fastapi==0.115.6
+fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic[email]==2.12.5
 email-validator==2.2.0
 python-dotenv==1.0.1
 pymongo==4.10.1
-requests==2.32.3
+requests==2.34.2
 websockets==14.1
 dnspython==2.7.0
-
+firebase-admin==7.8.0

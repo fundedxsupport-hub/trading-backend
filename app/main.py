@@ -3,7 +3,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -28,6 +28,10 @@ from app.models import (
     MessageResponse,
     MpinLoginRequest,
     PlanRequest,
+    PhoneOtpSendRequest,
+    PhoneOtpSendResponse,
+    PhoneOtpVerifyRequest,
+    PhoneOtpVerifyResponse,
     ReferralRecord,
     ReferralSettingsRequest,
     ReferralSettingsResponse,
@@ -58,7 +62,7 @@ from app.services.account_service import (
     list_referrals,
     list_support_tickets,
     list_users,
-    get_user_by_access_token,
+    get_user_by_firebase_uid,
     login_with_mpin,
     master_broker_status,
     reply_support_ticket,
@@ -73,6 +77,9 @@ from app.services.account_service import (
     update_risk_profile,
 )
 from app.services.market_service import get_option_chain, list_option_contracts
+from app.security import get_current_admin, verify_firebase_bearer_token
+from app.utils import normalize_email
+from app.services.phone_otp_service import send_phone_otp, verify_phone_otp
 from app.services.trade_service import close_app_trade
 from app.services.trade_service import close_trade as close_trade_service
 from app.services.trade_service import estimate_margin as estimate_margin_service
@@ -139,7 +146,25 @@ def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(bearer_
     if credentials is None or credentials.scheme.lower() != "bearer" or not credentials.credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing Authorization bearer token")
 
-    return get_user_by_access_token(credentials.credentials.strip())
+    claims = verify_firebase_bearer_token(credentials.credentials)
+    uid = claims.get("uid")
+    if not uid:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Firebase token has no user identity")
+    user = get_user_by_firebase_uid(uid)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Firebase account is not linked to a FundedX user")
+    return user
+
+
+def require_user_ownership(user_id: str, current_user: Dict[str, Any]) -> Dict[str, Any]:
+    requested_user = get_user_or_404(user_id)
+    if requested_user.get("user_id") != current_user.get("user_id"):
+        # Hide whether another user's identifier is valid.
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    return requested_user
+
+
+admin_router = APIRouter(dependencies=[Depends(get_current_admin)])
 
 
 @app.exception_handler(HTTPException)
@@ -188,33 +213,75 @@ def init_user(request: RegisterRequest = Body(...)) -> Dict[str, Any]:
 
 
 @app.post("/sync-user", response_model=SyncUserResponse)
-def sync_backend_user(request: RegisterRequest) -> Dict[str, Any]:
-    return sync_user(request)
+def sync_backend_user(
+    request: RegisterRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> Dict[str, Any]:
+    if credentials is None or credentials.scheme.lower() != "bearer" or not credentials.credentials:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Firebase bearer token required")
+    claims = verify_firebase_bearer_token(credentials.credentials)
+    uid = claims.get("uid")
+    token_email = claims.get("email")
+    if not uid or not token_email or normalize_email(request.email) != normalize_email(token_email):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Request email must match the signed-in Firebase account")
+    if request.external_uid and request.external_uid.strip() != uid:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Firebase UID does not match the signed-in account")
+    return sync_user(request, verified_uid=uid)
+
+
+@app.post("/phone-otp/send", response_model=PhoneOtpSendResponse)
+def phone_otp_send(request: PhoneOtpSendRequest) -> Dict[str, str]:
+    return send_phone_otp(request.mobile)
+
+
+@app.post("/phone-otp/verify", response_model=PhoneOtpVerifyResponse)
+def phone_otp_verify(request: PhoneOtpVerifyRequest) -> Dict[str, str]:
+    return verify_phone_otp(request.mobile, request.challenge_id, request.code)
 
 
 @app.get("/account/{user_id}", response_model=UserAccount)
-def get_account(user_id: str) -> Dict[str, Any]:
-    return serialize_user(get_user_or_404(user_id))
+def get_account(
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    user = require_user_ownership(user_id, current_user)
+    return serialize_user(user)
 
 
 @app.get("/wallet/{account_type}/{user_id}", response_model=WalletResponse)
-def wallet(account_type: AccountType, user_id: str) -> Dict[str, Any]:
-    return get_wallet(user_id, account_type)
+def wallet(
+    account_type: AccountType,
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    user = require_user_ownership(user_id, current_user)
+    return get_wallet(user["user_id"], account_type)
 
 
 @app.post("/plan/active", response_model=Dict[str, Any])
-def active_plan(request: PlanRequest) -> Dict[str, Any]:
-    return set_active_plan(request)
+def active_plan(
+    request: PlanRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    user = require_user_ownership(request.user_id, current_user)
+    return set_active_plan(request.model_copy(update={"user_id": user["user_id"]}))
 
 
 @app.post("/support/tickets", response_model=SupportTicketResponse, status_code=201)
-def support_ticket(request: SupportCreateRequest) -> Dict[str, Any]:
-    return create_support_ticket(request)
+def support_ticket(
+    request: SupportCreateRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    user = require_user_ownership(request.user_id, current_user)
+    return create_support_ticket(request.model_copy(update={"user_id": user["user_id"]}))
 
 
 @app.get("/support/tickets/{user_id}", response_model=List[SupportTicketResponse])
-def user_support_tickets(user_id: str) -> List[Dict[str, Any]]:
-    user = get_user_or_404(user_id)
+def user_support_tickets(
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> List[Dict[str, Any]]:
+    user = require_user_ownership(user_id, current_user)
     return [ticket for ticket in list_support_tickets() if ticket["user_id"] == user["user_id"]]
 
 
@@ -256,16 +323,20 @@ def trade(request: AppTradeRequest, current_user: Dict[str, Any] = Depends(get_c
     return open_app_trade(current_user, request)
 
 
-@app.post("/admin/trade/manual", response_model=TradeResponse, include_in_schema=False)
+@admin_router.post("/admin/trade/manual", response_model=TradeResponse, include_in_schema=False)
 def manual_trade(request: TradeRequest) -> Dict[str, Any]:
     return open_trade(request)
 
 
 @app.post("/trade/margin", response_model=MarginEstimateResponse)
-def trade_margin(request: MarginEstimateRequest) -> Dict[str, Any]:
+def trade_margin(
+    request: MarginEstimateRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    user = require_user_ownership(request.user_id, current_user)
     return estimate_margin_service(
         TradeRequest(
-            user_id=request.user_id,
+            user_id=user["user_id"],
             symbol=request.symbol,
             side=request.side,
             amount=request.entry_price or request.limit_price or 1,
@@ -287,27 +358,43 @@ def close_trade(request: AppCloseTradeRequest, current_user: Dict[str, Any] = De
     return close_app_trade(current_user, request)
 
 
-@app.post("/admin/close-trade/manual", response_model=CloseTradeResponse, include_in_schema=False)
+@admin_router.post("/admin/close-trade/manual", response_model=CloseTradeResponse, include_in_schema=False)
 def manual_close_trade(request: CloseTradeRequest) -> Dict[str, Any]:
     return close_trade_service(request)
 
 
 @app.get("/portfolio/{account_type}/{user_id}")
-def portfolio(account_type: AccountType, user_id: str) -> List[Dict[str, Any]]:
-    return list_portfolio(account_type, user_id)
+def portfolio(
+    account_type: AccountType,
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> List[Dict[str, Any]]:
+    user = require_user_ownership(user_id, current_user)
+    return list_portfolio(account_type, user["user_id"])
 
 
 @app.get("/trades/history/{account_type}/{user_id}")
-def trade_history(account_type: AccountType, user_id: str) -> List[Dict[str, Any]]:
-    return list_trade_history(account_type, user_id)
+def trade_history(
+    account_type: AccountType,
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> List[Dict[str, Any]]:
+    user = require_user_ownership(user_id, current_user)
+    return list_trade_history(account_type, user["user_id"])
 
 
 @app.get("/trade/{trade_id}")
-def trade_status(trade_id: str) -> Dict[str, Any]:
-    return get_trade(trade_id)
+def trade_status(
+    trade_id: str,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    trade = get_trade(trade_id)
+    if trade.get("user_id") != current_user.get("user_id"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade not found")
+    return trade
 
 
-@app.post("/admin/risk/sync-live")
+@admin_router.post("/admin/risk/sync-live")
 def admin_sync_live_risk() -> Dict[str, Any]:
     return sync_live_risk_once()
 
@@ -317,77 +404,77 @@ def broker_status() -> Dict[str, Any]:
     return master_broker_status()
 
 
-@app.get("/admin/stats", response_model=AdminStatsResponse)
+@admin_router.get("/admin/stats", response_model=AdminStatsResponse)
 def stats() -> AdminStatsResponse:
     return admin_stats()
 
 
-@app.get("/admin/users", response_model=List[UserAccount])
+@admin_router.get("/admin/users", response_model=List[UserAccount])
 def admin_users() -> List[Dict[str, Any]]:
     return list_users()
 
 
-@app.get("/admin/support", response_model=List[SupportTicketResponse])
+@admin_router.get("/admin/support", response_model=List[SupportTicketResponse])
 def admin_support() -> List[Dict[str, Any]]:
     return list_support_tickets()
 
 
-@app.post("/admin/support/{complaint_id}/reply", response_model=SupportTicketResponse)
+@admin_router.post("/admin/support/{complaint_id}/reply", response_model=SupportTicketResponse)
 def admin_support_reply(complaint_id: str, request: SupportReplyRequest) -> Dict[str, Any]:
     return reply_support_ticket(complaint_id, request)
 
 
-@app.post("/admin/wallet/challenge", response_model=WalletResponse)
+@admin_router.post("/admin/wallet/challenge", response_model=WalletResponse)
 def admin_challenge_wallet(request: AdminWalletUpdateRequest) -> Dict[str, Any]:
     return update_wallet(request.user_id, AccountType.challenge, request.amount, request.note)
 
 
-@app.post("/admin/wallet/real", response_model=WalletResponse)
+@admin_router.post("/admin/wallet/real", response_model=WalletResponse)
 def admin_real_wallet(request: AdminWalletUpdateRequest) -> Dict[str, Any]:
     return update_wallet(request.user_id, AccountType.real, request.amount, request.note)
 
 
-@app.get("/admin/trades")
+@admin_router.get("/admin/trades")
 def admin_trades(account_type: Optional[AccountType] = None, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
     return list_trades(account_type, user_id)
 
 
-@app.get("/admin/referral-settings", response_model=ReferralSettingsResponse)
+@admin_router.get("/admin/referral-settings", response_model=ReferralSettingsResponse)
 def admin_get_referral_settings() -> Dict[str, Any]:
     return get_referral_settings()
 
 
-@app.post("/admin/referral-settings", response_model=ReferralSettingsResponse)
+@admin_router.post("/admin/referral-settings", response_model=ReferralSettingsResponse)
 def admin_update_referral_settings(request: ReferralSettingsRequest) -> Dict[str, Any]:
     return update_referral_settings(request.reward_amount)
 
 
-@app.get("/admin/referrals", response_model=List[ReferralRecord])
+@admin_router.get("/admin/referrals", response_model=List[ReferralRecord])
 def admin_referrals() -> List[Dict[str, Any]]:
     return list_referrals()
 
 
-@app.post("/admin/referrals/{referral_id}/payment", response_model=MessageResponse)
+@admin_router.post("/admin/referrals/{referral_id}/payment", response_model=MessageResponse)
 def admin_referral_payment(referral_id: str, paid: bool = True) -> Dict[str, str]:
     return set_referral_payment(referral_id, paid)
 
 
-@app.post("/admin/referrals/{referral_id}/reverse", response_model=MessageResponse)
+@admin_router.post("/admin/referrals/{referral_id}/reverse", response_model=MessageResponse)
 def admin_referral_reverse(referral_id: str) -> Dict[str, str]:
     return reverse_referral_payment(referral_id)
 
 
-@app.get("/admin/risk/{user_id}", response_model=RiskProfileResponse)
+@admin_router.get("/admin/risk/{user_id}", response_model=RiskProfileResponse)
 def admin_get_risk(user_id: str) -> Dict[str, Any]:
     return get_risk_profile(user_id)
 
 
-@app.post("/admin/risk", response_model=RiskProfileResponse)
+@admin_router.post("/admin/risk", response_model=RiskProfileResponse)
 def admin_set_risk(request: RiskProfileRequest) -> Dict[str, Any]:
     return update_risk_profile(request.user_id, request.model_dump())
 
 
-@app.get("/admin/master-broker/status", response_model=MasterBrokerStatusResponse)
+@admin_router.get("/admin/master-broker/status", response_model=MasterBrokerStatusResponse)
 def admin_master_broker_status() -> Dict[str, Any]:
     return master_broker_status()
 
@@ -397,7 +484,7 @@ def request_activation(request: UserIdRequest) -> Dict[str, str]:
     return {"message": f"Activation request received for {request.user_id}"}
 
 
-@app.post("/admin/activate", response_model=AdminActivateResponse)
+@admin_router.post("/admin/activate", response_model=AdminActivateResponse)
 def admin_activate(request: UserIdRequest) -> Dict[str, Any]:
     return request_mpin_otp(request.user_id)
 
@@ -405,6 +492,9 @@ def admin_activate(request: UserIdRequest) -> Dict[str, Any]:
 @app.post("/verify-otp", response_model=MessageResponse)
 def verify_otp(request: VerifyOtpRequest) -> Dict[str, str]:
     return {"message": "OTP endpoint reserved for activation workflows"}
+
+
+app.include_router(admin_router)
 
 
 
