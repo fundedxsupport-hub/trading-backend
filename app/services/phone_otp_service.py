@@ -2,7 +2,7 @@ import hashlib
 import json
 import logging
 import secrets
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -17,6 +17,13 @@ from app.utils import now_utc
 logger = logging.getLogger(__name__)
 OTP_TTL_SECONDS = 300
 SEND_COOLDOWN_SECONDS = 60
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize MongoDB datetimes (returned naive by default) to aware UTC."""
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 def _normalize_mobile(value: str) -> str:
@@ -83,8 +90,11 @@ def send_phone_otp(mobile: str) -> Dict[str, str]:
     cooldown = otps.find_one(
         {"user_id": mobile, "purpose": "registration_phone_cooldown"}
     )
-    if cooldown and cooldown.get("created_at") and now - cooldown["created_at"] < timedelta(
-        seconds=SEND_COOLDOWN_SECONDS
+    if (
+        cooldown
+        and cooldown.get("created_at")
+        and now - _as_utc(cooldown["created_at"])
+        < timedelta(seconds=SEND_COOLDOWN_SECONDS)
     ):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -133,7 +143,7 @@ def verify_phone_otp(mobile: str, challenge_id: str, code: str) -> Dict[str, str
         not challenge
         or challenge.get("mobile") != mobile
         or not challenge.get("expires_at")
-        or challenge["expires_at"] <= now
+        or _as_utc(challenge["expires_at"]) <= now
     ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
