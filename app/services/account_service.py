@@ -259,6 +259,13 @@ def set_active_plan(request: PlanRequest) -> Dict[str, Any]:
 
 def update_wallet(user_id: str, account_type: AccountType, amount: float, note: Optional[str], admin: bool = True) -> Dict[str, Any]:
     user = get_user_or_404(user_id)
+    if account_type == AccountType.real:
+        reserved_exposure = float(user.get("real_exposure_used", 0) or 0)
+        if amount < reserved_exposure:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Real capital cannot be reduced below the user's currently reserved trade exposure",
+            )
     field = "challenge_virtual_capital" if account_type == AccountType.challenge else "real_capital"
     timestamp = now_utc()
     users.update_one({"user_id": user["user_id"]}, {"$set": {field: amount, "updated_at": timestamp}})
@@ -608,6 +615,9 @@ def master_broker_status() -> Dict[str, Any]:
         "base_url": settings.upstox_base_url,
         "account_id": settings.upstox_account_id or doc.get("account_id") or None,
         "has_access_token": bool(settings.upstox_access_token),
+        "shared_account_approved": settings.upstox_shared_account_approved,
+        "master_capital_limit": settings.upstox_master_capital_limit,
+        "reserved_real_exposure": float(doc.get("reserved_real_exposure", 0) or 0),
     }
 
 

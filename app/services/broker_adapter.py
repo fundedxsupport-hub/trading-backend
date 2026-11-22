@@ -5,7 +5,7 @@ from typing import Any, Dict
 import requests
 
 from app.config import get_settings
-from app.models import TradeExecutionStatus, TradeRequest
+from app.models import AccountType, TradeExecutionStatus, TradeRequest
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,10 @@ class BrokerAdapter:
         buy_margin = round(fallback_price * float(request.quantity), 2)
         fallback_margin = buy_margin if request.side.value == "BUY" else round(max(buy_margin * 5, buy_margin), 2)
 
+        # Challenge accounts use virtual funds and must not make broker calls.
+        if request.account_type == AccountType.challenge:
+            return fallback_margin
+
         if not self.is_live:
             return fallback_margin
 
@@ -89,6 +93,12 @@ class BrokerAdapter:
         return fallback_margin
 
     def place_order(self, request: TradeRequest) -> Dict[str, Any]:
+        if request.account_type == AccountType.challenge:
+            return {
+                "status": TradeExecutionStatus.demo,
+                "broker_order_id": None,
+                "message": "Challenge trades are virtual and are not sent to Upstox.",
+            }
         if not self.is_live:
             return {
                 "status": TradeExecutionStatus.demo,
@@ -103,7 +113,7 @@ class BrokerAdapter:
             "product": request.product or self.settings.upstox_product,
             "validity": self.settings.upstox_validity,
             "price": request.limit_price if order_type == "LIMIT" and request.limit_price else 0,
-            "tag": request.user_id,
+            "tag": request.broker_tag or request.user_id,
             "instrument_token": request.instrument_token or request.symbol,
             "order_type": order_type,
             "transaction_type": request.side.value,
@@ -121,11 +131,75 @@ class BrokerAdapter:
             detail = exc.response.text if exc.response is not None else str(exc)
             logger.exception("Upstox order rejected")
             return {"status": TradeExecutionStatus.failed, "broker_order_id": None, "message": detail}
-        except requests.RequestException as exc:
-            logger.exception("Upstox order request failed")
-            return {"status": TradeExecutionStatus.failed, "broker_order_id": None, "message": str(exc)}
+        except (requests.RequestException, ValueError) as exc:
+            # A timeout can occur after Upstox accepted the order. Treat that
+            # outcome as unknown and reconcile by the unique tag; never retry
+            # blindly or release the reserved exposure.
+            logger.exception("Upstox order request outcome is uncertain")
+            recovered = self.get_order_history_by_tag(request.broker_tag or "")
+            if recovered and recovered.get("order_id"):
+                return {
+                    "status": TradeExecutionStatus.pending,
+                    "broker_order_id": str(recovered["order_id"]),
+                    "message": "Order found by its unique tag after an uncertain response.",
+                }
+            return {"status": TradeExecutionStatus.pending, "broker_order_id": None, "message": "Order outcome is uncertain; backend will reconcile it by tag."}
+
+    def get_order_history_by_tag(self, tag: str) -> Dict[str, Any] | None:
+        if not self.is_live or not tag:
+            return None
+        url = f"{self.settings.upstox_base_url.rstrip('/')}/order/history"
+        try:
+            response = requests.get(url, params={"tag": tag}, headers=self._headers(), timeout=10)
+            response.raise_for_status()
+            payload = response.json()
+            items = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(items, list) and items:
+                return items[-1] if isinstance(items[-1], dict) else None
+            return None
+        except (requests.RequestException, ValueError):
+            logger.exception("Upstox order history lookup by tag failed")
+            return None
+
+    def get_order_details(self, order_id: str) -> Dict[str, Any] | None:
+        if not self.is_live or not order_id:
+            return None
+        url = f"{self.settings.upstox_base_url.rstrip('/')}/order/details"
+        try:
+            response = requests.get(url, params={"order_id": order_id}, headers=self._headers(), timeout=10)
+            response.raise_for_status()
+            payload = response.json()
+            data = payload.get("data") if isinstance(payload, dict) else None
+            return data if isinstance(data, dict) else None
+        except (requests.RequestException, ValueError):
+            logger.exception("Upstox order status lookup failed")
+            return None
+
+    def cancel_order(self, order_id: str) -> bool:
+        if not self.is_live or not order_id:
+            return False
+        url = f"{self.settings.upstox_base_url.rstrip('/')}/order/cancel"
+        try:
+            response = requests.delete(url, params={"order_id": order_id}, headers=self._headers(), timeout=10)
+            response.raise_for_status()
+            return True
+        except requests.RequestException:
+            logger.exception("Upstox order cancellation failed")
+            return False
 
     def close_order(self, trade: Dict[str, Any]) -> Dict[str, Any]:
+        if str(trade.get("account_type", "")) == AccountType.challenge.value:
+            return {
+                "status": TradeExecutionStatus.demo,
+                "broker_order_id": None,
+                "message": "Challenge trades are virtual and are not sent to Upstox.",
+            }
+        if trade.get("broker_live") is not True:
+            return {
+                "status": TradeExecutionStatus.demo,
+                "broker_order_id": None,
+                "message": "This app trade has no live Upstox order to close.",
+            }
         if not self.is_live:
             return {
                 "status": TradeExecutionStatus.demo,
@@ -136,11 +210,11 @@ class BrokerAdapter:
         close_side = "SELL" if str(trade.get("side", "BUY")).upper() == "BUY" else "BUY"
         url = f"{self.settings.upstox_base_url.rstrip('/')}/order/place"
         payload = {
-            "quantity": int(trade.get("quantity") or 0),
+            "quantity": int(trade.get("close_quantity") or trade.get("filled_quantity") or trade.get("quantity") or 0),
             "product": trade.get("product") or self.settings.upstox_product,
             "validity": self.settings.upstox_validity,
             "price": 0,
-            "tag": trade.get("user_id"),
+            "tag": trade.get("close_broker_tag") or trade.get("broker_tag") or trade.get("user_id"),
             "instrument_token": trade.get("instrument_token") or trade.get("symbol"),
             "order_type": "MARKET",
             "transaction_type": close_side,
@@ -158,9 +232,16 @@ class BrokerAdapter:
             detail = exc.response.text if exc.response is not None else str(exc)
             logger.exception("Upstox close order rejected")
             return {"status": TradeExecutionStatus.failed, "broker_order_id": None, "message": detail}
-        except requests.RequestException as exc:
-            logger.exception("Upstox close order request failed")
-            return {"status": TradeExecutionStatus.failed, "broker_order_id": None, "message": str(exc)}
+        except (requests.RequestException, ValueError) as exc:
+            logger.exception("Upstox close order response is uncertain")
+            recovered = self.get_order_history_by_tag(str(trade.get("close_broker_tag") or ""))
+            if recovered and recovered.get("order_id"):
+                return {
+                    "status": TradeExecutionStatus.pending,
+                    "broker_order_id": str(recovered["order_id"]),
+                    "message": "Close order found by its unique tag after an uncertain response.",
+                }
+            return {"status": TradeExecutionStatus.pending, "broker_order_id": None, "message": "Close order outcome is uncertain; backend will reconcile it by tag."}
 
 
 broker_adapter = BrokerAdapter()

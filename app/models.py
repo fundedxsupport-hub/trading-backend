@@ -261,6 +261,7 @@ class TradeRequest(BaseModel):
     strike: Optional[float] = None
     client_id: Optional[str] = None
     external_uid: Optional[str] = None
+    broker_tag: Optional[str] = None
 
 
 class TradeResponse(BaseModel):
@@ -430,3 +431,6 @@ class MasterBrokerStatusResponse(BaseModel):
     base_url: str
     account_id: Optional[str] = None
     has_access_token: bool
+    shared_account_approved: bool = False
+    master_capital_limit: float = 0
+    reserved_real_exposure: float = 0

@@ -24,6 +24,8 @@ class Settings:
     upstox_api_secret: str = ""
     upstox_product: str = "I"
     upstox_validity: str = "DAY"
+    upstox_master_capital_limit: float = 0.0
+    upstox_shared_account_approved: bool = False
     demo_broker_mode: bool = True
     admin_api_key: str = ""
     firebase_project_id: str = "fundedxindia-5d93e"
@@ -98,6 +100,8 @@ def get_settings() -> Settings:
         upstox_api_secret=os.getenv("UPSTOX_API_SECRET", ""),
         upstox_product=os.getenv("UPSTOX_PRODUCT", "I"),
         upstox_validity=os.getenv("UPSTOX_VALIDITY", "DAY"),
+        upstox_master_capital_limit=float(os.getenv("UPSTOX_MASTER_CAPITAL_LIMIT", "0")),
+        upstox_shared_account_approved=os.getenv("UPSTOX_SHARED_ACCOUNT_APPROVED", "false").lower() == "true",
         demo_broker_mode=os.getenv("DEMO_BROKER_MODE", "true").lower() == "true",
         admin_api_key=os.getenv("ADMIN_API_KEY", ""),
         firebase_project_id=os.getenv("FIREBASE_PROJECT_ID", "fundedxindia-5d93e"),
