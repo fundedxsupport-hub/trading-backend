@@ -32,6 +32,26 @@ def _firebase_app() -> firebase_admin.App:
         )
 
 
+def get_firebase_user_profile(uid: str) -> Optional[Dict[str, Any]]:
+    """Read a registration profile using Admin SDK credentials, never client claims."""
+    from firebase_admin import firestore
+
+    try:
+        snapshot = (
+            firestore.client(app=_firebase_app())
+            .collection("users")
+            .document(uid)
+            .get()
+        )
+    except Exception as exc:
+        logger.exception("Firebase profile lookup failed")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Profile verification service unavailable",
+        ) from exc
+    return snapshot.to_dict() if snapshot.exists else None
+
+
 def get_current_admin(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(admin_bearer_scheme),
 ) -> Dict[str, Any]:

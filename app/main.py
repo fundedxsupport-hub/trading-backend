@@ -25,6 +25,11 @@ from app.models import (
     MarginEstimateRequest,
     MarginEstimateResponse,
     MasterBrokerStatusResponse,
+    MpinOtpSendResponse,
+    MpinOtpVerifyResponse,
+    MpinResetFinishRequest,
+    MpinResetStartRequest,
+    MpinResetVerifyRequest,
     MessageResponse,
     MpinLoginRequest,
     PlanRequest,
@@ -53,6 +58,7 @@ from app.models import (
 from app.services.account_service import (
     admin_stats,
     change_mpin,
+    complete_mpin_reset,
     create_support_ticket,
     create_user,
     get_referral_settings,
@@ -67,6 +73,9 @@ from app.services.account_service import (
     master_broker_status,
     reply_support_ticket,
     request_mpin_otp,
+    request_mpin_reset_otp,
+    request_admin_activation_otp,
+    verify_mpin_reset_otp,
     serialize_user,
     set_active_plan,
     reverse_referral_payment,
@@ -285,9 +294,29 @@ def user_support_tickets(
     return [ticket for ticket in list_support_tickets() if ticket["user_id"] == user["user_id"]]
 
 
-@app.post("/mpin/request-otp", response_model=AdminActivateResponse)
+@app.post("/mpin/request-otp", response_model=MpinOtpSendResponse)
 def mpin_request_otp(request: UserIdRequest) -> Dict[str, Any]:
     return request_mpin_otp(request.user_id)
+
+
+@app.post("/mpin/forgot/request-otp", response_model=MpinOtpSendResponse)
+def mpin_forgot_request_otp(request: MpinResetStartRequest) -> Dict[str, Any]:
+    return request_mpin_reset_otp(request.mobile, request.dob)
+
+
+@app.post("/mpin/forgot/verify-otp", response_model=MpinOtpVerifyResponse)
+def mpin_forgot_verify_otp(request: MpinResetVerifyRequest) -> Dict[str, str]:
+    return verify_mpin_reset_otp(request.mobile, request.otp)
+
+
+@app.post("/mpin/forgot/change", response_model=MessageResponse)
+def mpin_forgot_change(request: MpinResetFinishRequest) -> Dict[str, str]:
+    return complete_mpin_reset(
+        request.mobile,
+        request.verification_token,
+        request.new_mpin,
+        request.confirm_mpin,
+    )
 
 
 @app.post("/mpin/change", response_model=MessageResponse)
@@ -486,7 +515,7 @@ def request_activation(request: UserIdRequest) -> Dict[str, str]:
 
 @admin_router.post("/admin/activate", response_model=AdminActivateResponse)
 def admin_activate(request: UserIdRequest) -> Dict[str, Any]:
-    return request_mpin_otp(request.user_id)
+    return request_admin_activation_otp(request.user_id)
 
 
 @app.post("/verify-otp", response_model=MessageResponse)

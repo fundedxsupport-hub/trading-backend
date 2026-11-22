@@ -38,7 +38,7 @@ def _normalize_mobile(value: str) -> str:
     return digits
 
 
-def _provider_request(path: str) -> Dict[str, Any]:
+def _provider_request(path: str, *, allow_provider_rejection: bool = False) -> Dict[str, Any]:
     api_key = get_settings().twofactor_api_key.strip()
     if not api_key:
         raise HTTPException(
@@ -74,7 +74,7 @@ def _provider_request(path: str) -> Dict[str, Any]:
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="2Factor returned an invalid response",
         )
-    if str(data.get("Status", "")).lower() != "success":
+    if not allow_provider_rejection and str(data.get("Status", "")).lower() != "success":
         provider_detail = str(data.get("Details", ""))
         logger.warning("2Factor OTP operation rejected: %s", provider_detail[:160])
         raise HTTPException(
@@ -82,6 +82,67 @@ def _provider_request(path: str) -> Dict[str, Any]:
             detail="2Factor rejected the OTP request. Check the API key, SMS credits, and account setup.",
         )
     return data
+
+
+def send_mpin_otp(user_id: str, mobile: str, *, purpose: str = "mpin_change") -> Dict[str, Any]:
+    """Send an MPIN OTP and store the provider session, never the OTP itself."""
+    mobile = _normalize_mobile(mobile)
+    now = now_utc()
+    previous = otps.find_one({"user_id": user_id, "purpose": purpose})
+    if previous and previous.get("created_at") and now - _as_utc(previous["created_at"]) < timedelta(seconds=SEND_COOLDOWN_SECONDS):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Wait one minute before requesting another OTP",
+        )
+
+    response = _provider_request(f"SMS/%2B91{mobile}/AUTOGEN")
+    provider_session = str(response.get("Details", "")).strip()
+    if not provider_session:
+        logger.error("2Factor success response did not contain an MPIN OTP session ID")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="OTP provider did not return a verification session",
+        )
+
+    otps.update_one(
+        {"user_id": user_id, "purpose": purpose},
+        {"$set": {
+            "provider_session": provider_session,
+            "mobile": mobile,
+            "attempts": 0,
+            "expires_at": now + timedelta(seconds=OTP_TTL_SECONDS),
+            "created_at": now,
+        }},
+        upsert=True,
+    )
+    return {"expires_in_seconds": OTP_TTL_SECONDS, "mobile": mobile}
+
+
+def verify_mpin_otp(user_id: str, code: str, *, purpose: str = "mpin_change") -> bool:
+    """Verify one provider OTP, enforcing expiry and a five-attempt limit."""
+    challenge = otps.find_one_and_update(
+        {
+            "user_id": user_id,
+            "purpose": purpose,
+            "expires_at": {"$gt": now_utc()},
+            "attempts": {"$lt": 5},
+        },
+        {"$inc": {"attempts": 1}},
+    )
+    if not challenge or not challenge.get("provider_session"):
+        return False
+
+    response = _provider_request(
+        "SMS/VERIFY/"
+        f"{quote(str(challenge['provider_session']), safe='')}/"
+        f"{quote(code.strip(), safe='')}",
+        allow_provider_rejection=True,
+    )
+    details = str(response.get("Details", "")).lower()
+    return (
+        str(response.get("Status", "")).lower() == "success"
+        and ("match" in details or "verified" in details)
+    )
 
 
 def send_phone_otp(mobile: str) -> Dict[str, str]:

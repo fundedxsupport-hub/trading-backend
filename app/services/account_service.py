@@ -1,4 +1,6 @@
-from datetime import timedelta
+import hashlib
+import secrets
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException, status
@@ -6,6 +8,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app.config import get_settings
 from app.database import master_broker, otps, referral_settings, referrals, risk_profiles, support_tickets, trades, users, wallet_logs
+from app.security import get_firebase_user_profile
 from app.models import (
     AccountType,
     AdminStatsResponse,
@@ -16,7 +19,7 @@ from app.models import (
     SupportCreateRequest,
     SupportReplyRequest,
 )
-from app.services.phone_otp_service import consume_phone_verification
+from app.services.phone_otp_service import consume_phone_verification, send_mpin_otp, verify_mpin_otp
 from app.utils import clean_dict, hash_secret, new_uuid, normalize_email, now_utc, public_id, random_code, verify_secret
 
 settings = get_settings()
@@ -334,20 +337,157 @@ def list_support_tickets() -> List[Dict[str, Any]]:
     return [clean_dict(ticket) for ticket in support_tickets.find({}).sort("updated_at", -1)]
 
 
+def _normalize_phone_candidates(value: str) -> List[str]:
+    digits = "".join(character for character in value if character.isdigit())
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    if len(digits) != 10:
+        return []
+    return [digits, f"91{digits}", f"+91{digits}"]
+
+
+def _parse_registered_dob(value: Any) -> Optional[date]:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if "T" in text:
+        text = text.split("T", 1)[0]
+    for pattern in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(text, pattern).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _record_dob_attempt(mobile: str) -> None:
+    key = {"user_id": mobile, "purpose": "mpin_reset_dob"}
+    now = now_utc()
+    attempt = otps.find_one(key)
+    if attempt and attempt.get("created_at"):
+        created_at = attempt["created_at"]
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        if now - created_at < timedelta(minutes=15):
+            if int(attempt.get("attempts", 0)) >= 5:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many attempts. Try again later.",
+                )
+            otps.update_one(key, {"$inc": {"attempts": 1}})
+            return
+    otps.update_one(
+        key,
+        {"$set": {"attempts": 1, "created_at": now}},
+        upsert=True,
+    )
+
+
+def _find_user_by_mobile(mobile: str) -> Optional[Dict[str, Any]]:
+    candidates = _normalize_phone_candidates(mobile)
+    return users.find_one({"mobile": {"$in": candidates}}) if candidates else None
+
+
+def request_mpin_reset_otp(mobile: str, dob: date) -> Dict[str, Any]:
+    candidates = _normalize_phone_candidates(mobile)
+    if not candidates:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Enter a valid registered mobile number")
+    normalized_mobile = candidates[0]
+    _record_dob_attempt(normalized_mobile)
+    user = _find_user_by_mobile(normalized_mobile)
+    profile = get_firebase_user_profile(str(user.get("external_uid", ""))) if user and user.get("external_uid") else None
+    registered_dob = _parse_registered_dob((profile or {}).get("dob"))
+    if not user or not registered_dob or registered_dob != dob:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mobile number or date of birth does not match registration",
+        )
+
+    delivery = send_mpin_otp(user["user_id"], normalized_mobile, purpose="mpin_forgot")
+    return {
+        "message": "OTP sent to the registered mobile number",
+        "expires_in_seconds": delivery["expires_in_seconds"],
+    }
+
+
+def verify_mpin_reset_otp(mobile: str, otp: str) -> Dict[str, str]:
+    user = _find_user_by_mobile(mobile)
+    if not user or not verify_mpin_otp(user["user_id"], otp, purpose="mpin_forgot"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP")
+    otps.delete_many({"user_id": user["user_id"], "purpose": "mpin_forgot"})
+    verification_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(verification_token.encode("utf-8")).hexdigest()
+    otps.insert_one({
+        "user_id": token_hash,
+        "purpose": "mpin_reset_verified",
+        "account_user_id": user["user_id"],
+        "mobile": _normalize_phone_candidates(mobile)[0],
+        "created_at": now_utc(),
+        "expires_at": now_utc() + timedelta(minutes=5),
+    })
+    return {"verification_token": verification_token, "message": "OTP verified"}
+
+
+def complete_mpin_reset(mobile: str, verification_token: str, new_mpin: str, confirm_mpin: str) -> Dict[str, str]:
+    if new_mpin != confirm_mpin:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MPIN confirmation does not match")
+    user = _find_user_by_mobile(mobile)
+    candidates = _normalize_phone_candidates(mobile)
+    token_hash = hashlib.sha256(verification_token.encode("utf-8")).hexdigest()
+    receipt = otps.find_one({
+        "user_id": token_hash,
+        "purpose": "mpin_reset_verified",
+        "account_user_id": user["user_id"] if user else None,
+        "mobile": candidates[0] if candidates else "",
+        "expires_at": {"$gt": now_utc()},
+    })
+    if not user or not receipt:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP")
+    if otps.delete_one({"_id": receipt["_id"], "purpose": "mpin_reset_verified"}).deleted_count != 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP")
+    digest, salt = hash_secret(new_mpin)
+    users.update_one(
+        {"user_id": user["user_id"]},
+        {"$set": {
+            "mpin_hash": digest,
+            "mpin_salt": salt,
+            "access_token": new_uuid(),
+            "updated_at": now_utc(),
+        }},
+    )
+    return {"message": "MPIN changed successfully"}
+
+
 def request_mpin_otp(user_id: str) -> Dict[str, Any]:
     user = get_user_or_404(user_id)
+    delivery = send_mpin_otp(user["user_id"], str(user.get("mobile", "")))
+    return {
+        "user_id": user["user_id"],
+        "expires_in_seconds": delivery["expires_in_seconds"],
+        "message": "OTP sent to the registered mobile number",
+    }
+
+
+def request_admin_activation_otp(user_id: str) -> Dict[str, Any]:
+    """Keep the admin-only activation workflow separate from client MPIN reset."""
+    user = get_user_or_404(user_id)
     code = random_code(6)
-    expires_at = now_utc() + timedelta(seconds=settings.otp_ttl_seconds)
     otps.update_one(
-        {"user_id": user["user_id"], "purpose": "mpin_change"},
-        {"$set": {"otp": code, "expires_at": expires_at, "created_at": now_utc()}},
+        {"user_id": user["user_id"], "purpose": "admin_activate"},
+        {"$set": {"otp": code, "expires_at": now_utc() + timedelta(seconds=settings.otp_ttl_seconds), "created_at": now_utc()}},
         upsert=True,
     )
     return {
         "user_id": user["user_id"],
         "otp": code,
         "expires_in_seconds": settings.otp_ttl_seconds,
-        "message": "OTP generated for registered mobile",
+        "message": "Activation code generated",
     }
 
 
@@ -355,8 +495,7 @@ def change_mpin(payload: ChangeMpinRequest) -> Dict[str, str]:
     if payload.new_mpin != payload.confirm_mpin:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="MPIN confirmation does not match")
     user = get_user_or_404(payload.user_id)
-    otp_doc = otps.find_one({"user_id": user["user_id"], "purpose": "mpin_change"})
-    if not otp_doc or otp_doc.get("otp") != payload.otp or otp_doc.get("expires_at") < now_utc():
+    if not verify_mpin_otp(user["user_id"], payload.otp, purpose="mpin_change"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired OTP")
     digest, salt = hash_secret(payload.new_mpin)
     users.update_one({"user_id": user["user_id"]}, {"$set": {"mpin_hash": digest, "mpin_salt": salt, "updated_at": now_utc()}})

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import List, Optional
 
@@ -160,6 +160,48 @@ class ChangeMpinRequest(BaseModel):
     otp: str = Field(..., min_length=4, max_length=6)
     new_mpin: str = Field(..., min_length=4, max_length=6)
     confirm_mpin: str = Field(..., min_length=4, max_length=6)
+
+
+class MpinResetStartRequest(BaseModel):
+    mobile: str = Field(..., min_length=10, max_length=20)
+    dob: date
+
+    @field_validator("mobile")
+    @classmethod
+    def normalize_mobile(cls, value: str) -> str:
+        return "".join(ch for ch in value.strip() if ch.isdigit() or ch == "+")
+
+
+class MpinResetVerifyRequest(BaseModel):
+    mobile: str = Field(..., min_length=10, max_length=20)
+    otp: str = Field(..., min_length=4, max_length=8)
+
+    @field_validator("mobile")
+    @classmethod
+    def normalize_mobile(cls, value: str) -> str:
+        return "".join(ch for ch in value.strip() if ch.isdigit() or ch == "+")
+
+
+class MpinResetFinishRequest(BaseModel):
+    mobile: str = Field(..., min_length=10, max_length=20)
+    verification_token: str = Field(..., min_length=32, max_length=128)
+    new_mpin: str = Field(..., min_length=4, max_length=4, pattern=r"^\d{4}$")
+    confirm_mpin: str = Field(..., min_length=4, max_length=4, pattern=r"^\d{4}$")
+
+    @field_validator("mobile")
+    @classmethod
+    def normalize_mobile(cls, value: str) -> str:
+        return "".join(ch for ch in value.strip() if ch.isdigit() or ch == "+")
+
+
+class MpinOtpSendResponse(BaseModel):
+    message: str
+    expires_in_seconds: int
+
+
+class MpinOtpVerifyResponse(BaseModel):
+    verification_token: str
+    message: str
 
 
 class MpinLoginRequest(BaseModel):
